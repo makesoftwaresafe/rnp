@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - master
+      - main
       - 'release/**'
     paths-ignore:
       - '/*.sh'
@@ -29,6 +30,10 @@ on:
       - '**.md'
       - '**.nix'
       - 'flake.lock'
+
+concurrency:
+  group: '${{ github.workflow }}-${{ github.job }}-${{ github.head_ref || github.ref_name }}'
+  cancel-in-progress: true
 
 env:
   BUILD_MODE: normal
@@ -58,6 +63,7 @@ jobs:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 1
+          submodules: true
       - uses: msys2/setup-msys2@v2
         with:
           path-type: minimal
@@ -74,7 +80,7 @@ jobs:
 # The code below kept here for potential need to build some dependencies locally
 #      - name: Cache
 #        id: cache
-#        uses: actions/cache@v2
+#        uses: actions/cache@v3
 #        with:
 #          path: ${{ env.CACHE_DIR }}
 #          key: ${{ github.workflow }}-${{ runner.os }}-${{ env.BUILD_MODE }}-${{ matrix.env.CC }}-gpg-${{ env.GPG_VERSION }}-${{ hashFiles('ci/**') }}-${{ hashFiles('.github/workflows/**') }}

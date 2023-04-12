@@ -6,13 +6,16 @@ on:
       - '/*.sh'
       - '/.*'
       - '/_*'
-      - '/vcpkg.txt'
       - 'Brewfile'
       - 'docs/**'
       - '**.adoc'
       - '**.md'
       - '**.nix'
       - 'flake.lock'
+
+concurrency:
+  group: '${{ github.workflow }}-${{ github.job }}-${{ github.head_ref || github.ref_name }}'
+  cancel-in-progress: true
 
 jobs:
   fuzzing:

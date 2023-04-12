@@ -122,12 +122,21 @@ typedef uint32_t rnp_result_t;
  * Flags for feature security rules.
  */
 #define RNP_SECURITY_OVERRIDE (1U << 0)
+#define RNP_SECURITY_VERIFY_KEY (1U << 1)
+#define RNP_SECURITY_VERIFY_DATA (1U << 2)
 #define RNP_SECURITY_REMOVE_ALL (1U << 16)
 
 /**
  * Encryption flags
  */
 #define RNP_ENCRYPT_NOWRAP (1U << 0)
+
+/**
+ * Decryption/verification flags
+ */
+#define RNP_VERIFY_IGNORE_SIGS_ON_DECRYPT (1U << 0)
+#define RNP_VERIFY_REQUIRE_ALL_SIGS (1U << 1)
+#define RNP_VERIFY_ALLOW_HIDDEN_RECIPIENT (1U << 2)
 
 /**
  * Return a constant string describing the result code
@@ -180,7 +189,7 @@ RNP_API uint32_t rnp_version_patch(uint32_t version);
  *  This function is only useful for non-releases. For releases,
  *  it will return 0.
  *
- *  The intended usage is to provide a form of versioning for the master
+ *  The intended usage is to provide a form of versioning for the main
  *  branch.
  *
  *  @return the unix timestamp of the last commit, or 0 if unavailable
@@ -303,6 +312,10 @@ typedef bool (*rnp_password_cb)(rnp_ffi_t        ffi,
  *  to verify a signature, the signer's keyid may be used first to request the key.
  *  If that is not successful, the signer's fingerprint (if available) may be used.
  *
+ *  Please note that there is a special case with 'hidden' recipient, with all-zero keyid. In
+ *  this case implementation should load all available secret keys for the decryption attempt
+ *  (or do nothing, in this case decryption to the hidden recipient would fail).
+ *
  *  Situations in which this callback would be used include:
  *   - When decrypting data that includes a public-key encrypted session key,
  *     and the key is not found in the keyrings.
@@ -363,6 +376,17 @@ RNP_API rnp_result_t rnp_ffi_create(rnp_ffi_t * ffi,
 RNP_API rnp_result_t rnp_ffi_destroy(rnp_ffi_t ffi);
 
 RNP_API rnp_result_t rnp_ffi_set_log_fd(rnp_ffi_t ffi, int fd);
+
+/**
+ * @brief Set key provider callback. This callback would be called in case when required public
+ *        or secret key is not loaded to the keyrings.
+ *
+ * @param ffi initialized ffi object, cannot be NULL.
+ * @param getkeycb callback function. See rnp_get_key_cb documentation for details.
+ * @param getkeycb_ctx implementation-specific context, which would be passed to the getkeycb
+ *                      on invocation.
+ * @return RNP_SUCCESS on success, or any other value on error.
+ */
 RNP_API rnp_result_t rnp_ffi_set_key_provider(rnp_ffi_t      ffi,
                                               rnp_get_key_cb getkeycb,
                                               void *         getkeycb_ctx);
@@ -458,6 +482,11 @@ RNP_API rnp_result_t rnp_supported_features(const char *type, char **result);
  *                May be used to temporarily enable or disable some feature value (e.g., to
  *                enable verification of SHA1 or MD5 signature), and then revert changes via
  *                rnp_remove_security_rule().
+ *              - RNP_SECURITY_VERIFY_KEY : limit rule only to the key signature verification.
+ *              - RNP_SECURITY_VERIFY_DATA : limit rule only to the data signature
+ *                verification.
+ *              Note: by default rule applies to all possible usages.
+ *
  * @param from timestamp, from when the rule is active. Objects that have creation time (like
  *             signatures) are matched with the closest rules from the past, unless there is
  *             a rule with an override flag. For instance, given a single rule with algorithm
@@ -494,7 +523,13 @@ RNP_API rnp_result_t rnp_add_security_rule(rnp_ffi_t   ffi,
  * @param type feature type to search for. Only RNP_FEATURE_HASH_ALG is supported right now.
  * @param name feature name, i.e. SHA1 or so on.
  * @param time timestamp for which feature should be checked.
- * @param flags if non-NULL then rule's flags will be put here.
+ * @param flags if non-NULL then rule's flags will be put here. In this case *flags must be
+ *              initialized to the desired usage limitation:
+ *               - 0 to look up for any usage (this is also assumed if flags parameter is
+ *                 NULL).
+ *               - RNP_SECURITY_VERIFY_KEY, RNP_SECURITY_VERIFY_DATA and so on to look up for
+ *                 the specific usage. Please note that constants cannot be ORed here, only
+ *                 single one must be present.
  * @param from if non-NULL then rule's from time will be put here.
  * @param level cannot be NULL. Security level will be stored here.
  * @return RNP_SUCCESS or any other value on error.
@@ -518,6 +553,8 @@ RNP_API rnp_result_t rnp_get_security_rule(rnp_ffi_t   ffi,
  * @param level security level of the rule.
  * @param flags additional flags, following are defined at the moment:
  *          - RNP_SECURITY_OVERRIDE : rule should match this flag
+ *          - RNP_SECURITY_VERIFY_KEY, RNP_SECURITY_VERIFY_DATA : rule should match these flags
+ *            (can be ORed together)
  *          - RNP_SECURITY_REMOVE_ALL : remove all rules for type and name.
  * @param from timestamp, for when the rule should be removed. Ignored if
  *             RNP_SECURITY_REMOVE_ALL_FROM is specified.
@@ -1059,7 +1096,7 @@ RNP_API rnp_result_t rnp_key_export_autocrypt(rnp_key_handle_t key,
  *            searched for the authorized to issue revocation signature secret key. If secret
  *            key is locked then password will be asked via password provider.
  * @param output signature contents will be saved here.
- * @param flags currently must be 0.
+ * @param flags must be RNP_KEY_EXPORT_ARMORED or 0.
  * @param hash hash algorithm used to calculate signature. Pass NULL for default algorithm
  *             selection.
  * @param code reason for revocation code. Possible values: 'no', 'superseded', 'compromised',
@@ -1480,6 +1517,18 @@ RNP_API rnp_result_t rnp_signature_packet_to_json(rnp_signature_handle_t sig,
  * @return RNP_SUCCESS if signature was successfully deleted, or any other value on error.
  */
 RNP_API rnp_result_t rnp_signature_remove(rnp_key_handle_t key, rnp_signature_handle_t sig);
+
+/**
+ * @brief Export a signature.
+ *
+ * @param sig signature handle, cannot be NULL.
+ * @param output destination of the data stream.
+ * @param flags must be RNP_KEY_EXPORT_ARMORED or 0.
+ * @return RNP_SUCCESS or error code if failed.
+ */
+RNP_API rnp_result_t rnp_signature_export(rnp_signature_handle_t sig,
+                                          rnp_output_t           output,
+                                          uint32_t               flags);
 
 /** Free signature handle.
  *
@@ -2163,7 +2212,9 @@ RNP_API rnp_result_t rnp_op_sign_set_hash(rnp_op_sign_t op, const char *hash);
 /** @brief Set signature creation time. By default current time is used.
  *  @param op opaque signing context. Must be successfully initialized with one of the
  *         rnp_op_sign_*_create functions.
- *  @param create creation time in seconds since Jan, 1 1970 UTC
+ *  @param create creation time in seconds since Jan, 1 1970 UTC. 32 bit unsigned integer
+ *                datatype is used here instead of 64 bit (like modern timestamps do) because
+ *                in OpenPGP messages times are stored as 32-bit unsigned integers.
  *  @return RNP_SUCCESS or error code if failed
  */
 RNP_API rnp_result_t rnp_op_sign_set_creation_time(rnp_op_sign_t op, uint32_t create);
@@ -2188,7 +2239,9 @@ RNP_API rnp_result_t rnp_op_sign_set_file_name(rnp_op_sign_t op, const char *fil
 
 /** @brief Set input's file modification date. Makes sense only for embedded signature.
  *  @param op opaque signing context. Must be initialized with rnp_op_sign_create function
- *  @param mtime modification time in seconds since Jan, 1 1970 UTC.
+ *  @param mtime modification time in seconds since Jan, 1 1970 UTC. 32 bit unsigned integer
+ *               datatype is used here instead of 64 bit (like modern timestamps do) because
+ *               in OpenPGP messages times are stored as 32-bit unsigned integers.
  *  @return RNP_SUCCESS or error code if failed
  */
 RNP_API rnp_result_t rnp_op_sign_set_file_mtime(rnp_op_sign_t op, uint32_t mtime);
@@ -2211,8 +2264,9 @@ RNP_API rnp_result_t rnp_op_sign_destroy(rnp_op_sign_t op);
 /* Verification */
 
 /** @brief Create verification operation context. This method should be used for embedded
- *         signatures or cleartext signed data. For detached verification corresponding
- *         function should be used.
+ *         signatures, cleartext signed data and encrypted (and possibly signed) data.
+ *         For the detached signature verification the function rnp_op_verify_detached_create()
+ *         should be used.
  *  @param op pointer to opaque verification context
  *  @param ffi
  *  @param input stream with signed data. Could not be NULL.
@@ -2237,12 +2291,37 @@ RNP_API rnp_result_t rnp_op_verify_detached_create(rnp_op_verify_t *op,
                                                    rnp_input_t      input,
                                                    rnp_input_t      signature);
 
+/**
+ * @brief Set additional flags which control data verification/decryption process.
+ *
+ * @param op pointer to opaque verification context.
+ * @param flags verification flags. OR-ed combination of RNP_VERIFY_* values.
+ *              Following flags are supported:
+ *              RNP_VERIFY_IGNORE_SIGS_ON_DECRYPT - ignore invalid signatures for the encrypted
+ *                and signed data. If this flag is set then rnp_op_verify_execute() call will
+ *                succeed and output data even if all signatures are invalid or issued by the
+ *                unknown key(s).
+ *              RNP_VERIFY_REQUIRE_ALL_SIGS - require that all signatures (if any) must be
+ *                valid for successful run of rnp_op_verify_execute().
+ *              RNP_VERIFY_ALLOW_HIDDEN_RECIPIENT - allow hidden recipient during the
+ *                decryption.
+ *
+ *              Note: all flags are set at once, if some flag is not present in the subsequent
+ *              call then it will be unset.
+ * @return RNP_SUCCESS or error code if failed
+ */
+RNP_API rnp_result_t rnp_op_verify_set_flags(rnp_op_verify_t op, uint32_t flags);
+
 /** @brief Execute previously initialized verification operation.
  *  @param op opaque verification context. Must be successfully initialized.
- *  @return RNP_SUCCESS if data was processed successfully and all signatures are valid.
- *          Otherwise error code is returned. After rnp_op_verify_execute()
- *          rnp_op_verify_get_* functions may be used to query information about the
- *          signature(s).
+ *  @return RNP_SUCCESS if data was processed successfully and output may be used. By default
+ *          this means at least one valid signature for the signed data, or successfully
+ *          decrypted data if no signatures are present.
+ *          This behaviour may be overriden via rnp_op_verify_set_flags() call.
+ *
+ *          To check number of signatures and their verification status use functions
+ *          rnp_op_verify_get_signature_count() and rnp_op_verify_get_signature_at().
+ *          To check data encryption status use function rnp_op_verify_get_protection_info().
  */
 RNP_API rnp_result_t rnp_op_verify_execute(rnp_op_verify_t op);
 
@@ -2815,17 +2894,17 @@ RNP_API rnp_result_t rnp_op_encrypt_set_cipher(rnp_op_encrypt_t op, const char *
  *
  * @param op opaque encrypting context. Must be allocated and initialized.
  * @param alg NULL-terminated AEAD algorithm name. Use "None" to disable AEAD, or "EAX", "OCB"
- * to use the corresponding algorithm.
+ *            to use the corresponding algorithm.
  * @return RNP_SUCCESS or error code if failed
  */
 RNP_API rnp_result_t rnp_op_encrypt_set_aead(rnp_op_encrypt_t op, const char *alg);
 
 /**
- * @brief set chunk length for AEAD mode via number of chunk size bits (refer OpenPGP
- * specificationf for the details).
+ * @brief set chunk length for AEAD mode via number of chunk size bits (refer to the OpenPGP
+ *        specification for the details).
  *
  * @param op opaque encrypting context. Must be allocated and initialized.
- * @param bits number of bits, currently it must be between 0 to 56.
+ * @param bits number of bits, currently it must be from 0 to 16.
  * @return RNP_SUCCESS or error code if failed
  */
 RNP_API rnp_result_t rnp_op_encrypt_set_aead_bits(rnp_op_encrypt_t op, int bits);
@@ -2871,7 +2950,9 @@ RNP_API rnp_result_t rnp_op_encrypt_set_file_name(rnp_op_encrypt_t op, const cha
  * @brief set the internally stored file modification date for the data being encrypted
  *
  * @param op opaque encrypted context. Must be allocated and initialized
- * @param mtime time in seconds since Jan, 1 1970.
+ * @param mtime time in seconds since Jan, 1 1970. 32 bit unsigned integer datatype is used
+ *              here instead of 64 bit (like modern timestamps do) because in OpenPGP messages
+ *              times are stored as 32-bit unsigned integers.
  * @return RNP_SUCCESS on success, or any other value on error
  */
 RNP_API rnp_result_t rnp_op_encrypt_set_file_mtime(rnp_op_encrypt_t op, uint32_t mtime);
@@ -2879,6 +2960,19 @@ RNP_API rnp_result_t rnp_op_encrypt_set_file_mtime(rnp_op_encrypt_t op, uint32_t
 RNP_API rnp_result_t rnp_op_encrypt_execute(rnp_op_encrypt_t op);
 RNP_API rnp_result_t rnp_op_encrypt_destroy(rnp_op_encrypt_t op);
 
+/**
+ * @brief Decrypt encrypted data in input and write it to the output on success.
+ *        If data is additionally signed then signatures are ignored.
+ *        For more control over the decryption process see functions rnp_op_verify_create() and
+ *        rnp_op_verify_execute(), which allows to verify signatures as well as decrypt data
+ *        and retrieve encryption-related information.
+ *
+ * @param ffi initialized FFI object. Cannot be NULL.
+ * @param input source with encrypted data. Cannot be NULL.
+ * @param output on success decrypted data will be written here. Cannot be NULL.
+ * @return RNP_SUCCESS if data was successfully decrypted and written to the output, or any
+ *         other value on error.
+ */
 RNP_API rnp_result_t rnp_decrypt(rnp_ffi_t ffi, rnp_input_t input, rnp_output_t output);
 
 /** retrieve the raw data for a public key
@@ -2924,7 +3018,7 @@ RNP_API rnp_result_t rnp_key_to_json(rnp_key_handle_t handle, uint32_t flags, ch
  *
  *  @param ffi
  *  @param it pointer that will be set to the created iterator
- *  @param identifier_type the type of identifier ("userid", "keyid", "grip")
+ *  @param identifier_type the type of identifier ("userid", "keyid", "grip", "fingerprint")
  *  @return RNP_SUCCESS on success, or any other value on error
  */
 RNP_API rnp_result_t rnp_identifier_iterator_create(rnp_ffi_t                  ffi,

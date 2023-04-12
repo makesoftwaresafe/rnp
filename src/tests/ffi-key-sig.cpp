@@ -32,6 +32,11 @@
 #include "rnp_tests.h"
 #include "support.h"
 
+static bool check_sig_status(json_object *sig,
+                             const char * pub,
+                             const char * sec,
+                             const char * fp);
+
 TEST_F(rnp_tests, test_ffi_key_signatures)
 {
     rnp_ffi_t ffi = NULL;
@@ -109,6 +114,52 @@ TEST_F(rnp_tests, test_ffi_key_signatures)
     assert_rnp_success(rnp_key_get_signature_count(subkey, &sigs));
     assert_int_equal(sigs, 1);
     assert_rnp_success(rnp_key_get_signature_at(subkey, 0, &sig));
+    // check signature export
+    rnp_output_t output = NULL;
+    assert_rnp_success(rnp_output_to_memory(&output, 0));
+    assert_rnp_failure(rnp_signature_export(NULL, output, 0));
+    assert_rnp_failure(rnp_signature_export(sig, NULL, 0));
+    assert_rnp_failure(rnp_signature_export(sig, output, 0x333));
+    assert_rnp_success(rnp_signature_export(sig, output, 0));
+    uint8_t *buf = NULL;
+    size_t   len = 0;
+    assert_rnp_success(rnp_output_memory_get_buf(output, &buf, &len, false));
+    assert_int_equal(len, 154);
+    rnp_input_t input;
+    assert_rnp_success(rnp_input_from_memory(&input, buf, len, false));
+    char *json = NULL;
+    assert_rnp_success(rnp_import_signatures(ffi, input, 0, &json));
+    assert_non_null(json);
+    json_object *jso = json_tokener_parse(json);
+    assert_non_null(jso);
+    assert_true(json_object_is_type(jso, json_type_object));
+    json_object *jsigs = NULL;
+    assert_true(json_object_object_get_ex(jso, "sigs", &jsigs));
+    assert_true(json_object_is_type(jsigs, json_type_array));
+    assert_int_equal(json_object_array_length(jsigs), 1);
+    json_object *jsig = json_object_array_get_idx(jsigs, 0);
+    assert_true(check_sig_status(jsig, "none", "none", NULL));
+    json_object_put(jso);
+    rnp_buffer_destroy(json);
+    assert_rnp_success(rnp_input_destroy(input));
+    assert_rnp_success(rnp_output_destroy(output));
+
+    output = NULL;
+    assert_rnp_success(rnp_output_to_memory(&output, 0));
+    assert_rnp_success(rnp_signature_export(sig, output, RNP_KEY_EXPORT_ARMORED));
+    buf = NULL;
+    len = 0;
+    assert_rnp_success(rnp_output_memory_get_buf(output, &buf, &len, false));
+    assert_int_equal(len, 297);
+    std::string data((const char *) buf, len);
+    assert_true(starts_with(data, "-----BEGIN PGP PUBLIC KEY BLOCK-----"));
+    assert_true(ends_with(strip_eol(data), "-----END PGP PUBLIC KEY BLOCK-----"));
+
+    assert_rnp_success(rnp_input_from_memory(&input, buf, len, false));
+    assert_rnp_success(rnp_import_signatures(ffi, input, 0, NULL));
+    assert_rnp_success(rnp_input_destroy(input));
+    assert_rnp_success(rnp_output_destroy(output));
+
     assert_rnp_success(rnp_signature_get_type(sig, &type));
     assert_string_equal(type, "subkey binding");
     rnp_buffer_destroy(type);
@@ -469,6 +520,13 @@ TEST_F(rnp_tests, test_ffi_export_revocation)
       rnp_ffi_set_pass_provider(ffi, ffi_string_password_provider, (void *) "wrong"));
     assert_rnp_failure(rnp_key_export_revocation(
       key_handle, output, 0, "SHA256", "superseded", "test key revocation"));
+    assert_rnp_failure(rnp_key_export_revocation(key_handle,
+                                                 output,
+                                                 RNP_KEY_EXPORT_ARMORED,
+                                                 "SHA256",
+                                                 "superseded",
+                                                 "test key revocation"));
+
     /* unlocked key - must succeed */
     assert_rnp_success(rnp_key_unlock(key_handle, "password"));
     assert_rnp_success(rnp_key_export_revocation(key_handle, output, 0, "SHA256", NULL, NULL));
@@ -480,11 +538,17 @@ TEST_F(rnp_tests, test_ffi_export_revocation)
       rnp_ffi_set_pass_provider(ffi, ffi_string_password_provider, (void *) "password"));
     assert_rnp_success(rnp_key_export_revocation(
       key_handle, output, 0, "SHA256", "superseded", "test key revocation"));
+    assert_rnp_success(rnp_output_destroy(output));
+
+    /* check that the output is binary or armored as requested */
+    std::string data = file_to_str("alice-revocation.pgp");
+    assert_false(starts_with(data, "-----BEGIN PGP PUBLIC KEY BLOCK-----"));
+    assert_false(ends_with(strip_eol(data), "-----END PGP PUBLIC KEY BLOCK-----"));
+
     /* make sure FFI locks key back */
     bool locked = false;
     assert_rnp_success(rnp_key_is_locked(key_handle, &locked));
     assert_true(locked);
-    assert_rnp_success(rnp_output_destroy(output));
     assert_rnp_success(rnp_key_handle_destroy(key_handle));
     /* make sure we can successfully import exported revocation */
     json_object *jso = NULL;
@@ -517,8 +581,51 @@ TEST_F(rnp_tests, test_ffi_export_revocation)
     assert_true(sig.has_keyfp());
     assert_int_equal(sig.revocation_code(), PGP_REVOCATION_SUPERSEDED);
     assert_string_equal(sig.revocation_reason().c_str(), "test key revocation");
-    assert_int_equal(unlink("alice-revocation.pgp"), 0);
 
+    assert_int_equal(rnp_unlink("alice-revocation.pgp"), 0);
+    assert_rnp_success(rnp_ffi_destroy(ffi));
+
+    /* testing armored revocation generation */
+
+    // load initial keyring
+    assert_rnp_success(rnp_ffi_create(&ffi, "GPG", "GPG"));
+    assert_true(import_sec_keys(ffi, "data/test_key_validity/alice-sec.asc"));
+
+    key_handle = NULL;
+    assert_rnp_success(rnp_locate_key(ffi, "userid", "Alice <alice@rnp>", &key_handle));
+
+    // export revocation
+    assert_rnp_success(rnp_output_to_path(&output, "alice-revocation.asc"));
+    assert_rnp_success(rnp_key_unlock(key_handle, "password"));
+    assert_rnp_success(rnp_key_export_revocation(key_handle,
+                                                 output,
+                                                 RNP_KEY_EXPORT_ARMORED,
+                                                 "SHA256",
+                                                 "superseded",
+                                                 "test key revocation"));
+    assert_rnp_success(rnp_output_destroy(output));
+    assert_rnp_success(rnp_key_handle_destroy(key_handle));
+
+    data = file_to_str("alice-revocation.asc");
+    assert_true(starts_with(data, "-----BEGIN PGP PUBLIC KEY BLOCK-----"));
+    assert_true(ends_with(strip_eol(data), "-----END PGP PUBLIC KEY BLOCK-----"));
+
+    // import it back
+    assert_true(check_import_sigs(ffi, &jso, &jsosigs, "alice-revocation.asc"));
+    assert_int_equal(json_object_array_length(jsosigs), 1);
+    jsosig = json_object_array_get_idx(jsosigs, 0);
+    assert_true(
+      check_sig_status(jsosig, "new", "new", "73edcc9119afc8e2dbbdcde50451409669ffde3c"));
+    json_object_put(jso);
+
+    // make sure that key becomes revoked
+    key_handle = NULL;
+    assert_rnp_success(rnp_locate_key(ffi, "userid", "Alice <alice@rnp>", &key_handle));
+    assert_rnp_success(rnp_key_is_revoked(key_handle, &revoked));
+    assert_true(revoked);
+    assert_rnp_success(rnp_key_handle_destroy(key_handle));
+
+    assert_int_equal(rnp_unlink("alice-revocation.asc"), 0);
     assert_rnp_success(rnp_ffi_destroy(ffi));
 }
 
@@ -1185,7 +1292,7 @@ key_packets(rnp_key_handle_t key)
     return res;
 }
 
-void
+static void
 sigremove_leave(rnp_ffi_t ffi, void *app_ctx, rnp_signature_handle_t sig, uint32_t *action)
 {
     assert_true((*(int *) app_ctx) == 48);
@@ -1195,7 +1302,7 @@ sigremove_leave(rnp_ffi_t ffi, void *app_ctx, rnp_signature_handle_t sig, uint32
     *action = RNP_KEY_SIGNATURE_KEEP;
 }
 
-void
+static void
 sigremove_unchanged(rnp_ffi_t ffi, void *app_ctx, rnp_signature_handle_t sig, uint32_t *action)
 {
     assert_true((*(int *) app_ctx) == 48);
@@ -1204,14 +1311,14 @@ sigremove_unchanged(rnp_ffi_t ffi, void *app_ctx, rnp_signature_handle_t sig, ui
     assert_non_null(ffi);
 }
 
-void
+static void
 sigremove_remove(rnp_ffi_t ffi, void *app_ctx, rnp_signature_handle_t sig, uint32_t *action)
 {
     assert_true((*(int *) app_ctx) == 48);
     *action = RNP_KEY_SIGNATURE_REMOVE;
 }
 
-void
+static void
 sigremove_revocation(rnp_ffi_t              ffi,
                      void *                 app_ctx,
                      rnp_signature_handle_t sig,

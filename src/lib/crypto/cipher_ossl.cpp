@@ -24,6 +24,8 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 #include <cassert>
+#include <algorithm>
+
 #include "cipher_ossl.hpp"
 #include "utils.h"
 #include "types.h"
@@ -43,11 +45,30 @@ static const id_str_pair cipher_map[] = {
 };
 
 EVP_CIPHER_CTX *
-Cipher_OpenSSL::create(const std::string &name,
+Cipher_OpenSSL::create(pgp_symm_alg_t     alg,
+                       const std::string &name,
                        bool               encrypt,
                        size_t             tag_size,
                        bool               disable_padding)
 {
+#if !defined(ENABLE_IDEA)
+    if (alg == PGP_SA_IDEA) {
+        RNP_LOG("IDEA support has been disabled");
+        return nullptr;
+    }
+#endif
+#if !defined(ENABLE_BLOWFISH)
+    if (alg == PGP_SA_BLOWFISH) {
+        RNP_LOG("Blowfish support has been disabled");
+        return nullptr;
+    }
+#endif
+#if !defined(ENABLE_CAST5)
+    if (alg == PGP_SA_CAST5) {
+        RNP_LOG("CAST5 support has been disabled");
+        return nullptr;
+    }
+#endif
     const EVP_CIPHER *cipher = EVP_get_cipherbyname(name.c_str());
     if (!cipher) {
         RNP_LOG("Unsupported cipher: %s", name.c_str());
@@ -94,11 +115,13 @@ Cipher_OpenSSL::encryption(pgp_symm_alg_t    cipher,
                            size_t            tag_size,
                            bool              disable_padding)
 {
-    return std::unique_ptr<Cipher_OpenSSL>(new (std::nothrow) Cipher_OpenSSL(
-      cipher,
-      create(make_name(cipher, mode), true, tag_size, disable_padding),
-      tag_size,
-      true));
+    EVP_CIPHER_CTX *ossl_ctx =
+      create(cipher, make_name(cipher, mode), true, tag_size, disable_padding);
+    if (!ossl_ctx) {
+        return NULL;
+    }
+    return std::unique_ptr<Cipher_OpenSSL>(new (std::nothrow)
+                                             Cipher_OpenSSL(cipher, ossl_ctx, tag_size, true));
 }
 
 std::unique_ptr<Cipher_OpenSSL>
@@ -107,11 +130,13 @@ Cipher_OpenSSL::decryption(pgp_symm_alg_t    cipher,
                            size_t            tag_size,
                            bool              disable_padding)
 {
-    return std::unique_ptr<Cipher_OpenSSL>(new (std::nothrow) Cipher_OpenSSL(
-      cipher,
-      create(make_name(cipher, mode), false, tag_size, disable_padding),
-      tag_size,
-      false));
+    EVP_CIPHER_CTX *ossl_ctx =
+      create(cipher, make_name(cipher, mode), false, tag_size, disable_padding);
+    if (!ossl_ctx) {
+        return NULL;
+    }
+    return std::unique_ptr<Cipher_OpenSSL>(
+      new (std::nothrow) Cipher_OpenSSL(cipher, ossl_ctx, tag_size, false));
 }
 
 bool
@@ -149,10 +174,6 @@ Cipher_OpenSSL::set_ad(const uint8_t *ad, size_t ad_length)
     int outlen = 0;
     if (EVP_CipherUpdate(m_ctx, NULL, &outlen, ad, ad_length) != 1) {
         RNP_LOG("Failed to set AD: %lu", ERR_peek_last_error());
-        return false;
-    }
-    if ((size_t) outlen != ad_length) {
-        RNP_LOG("Failed to set AD");
         return false;
     }
     return true;
@@ -202,7 +223,7 @@ Cipher_OpenSSL::finish(uint8_t *      output,
     if (input_length > INT_MAX) {
         return false;
     }
-    if (input_length < m_tag_size) {
+    if (!m_encrypt && input_length < m_tag_size) {
         RNP_LOG("Insufficient input for final block (missing tag)");
         return false;
     }
@@ -218,8 +239,9 @@ Cipher_OpenSSL::finish(uint8_t *      output,
             RNP_LOG("Failed to set expected AEAD tag: %lu", ERR_peek_last_error());
             return false;
         }
-        input_length -= m_tag_size;
-        *input_consumed += m_tag_size;
+        size_t ats = std::min(m_tag_size, input_length);
+        input_length -= ats;    // m_tag_size;
+        *input_consumed += ats; // m_tag_size;
     }
     int outl = 0;
     if (EVP_CipherUpdate(m_ctx, output, &outl, input, (int) input_length) != 1) {

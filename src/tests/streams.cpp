@@ -400,8 +400,7 @@ TEST_F(rnp_tests, test_stream_signatures)
     hash = hash_orig->clone();
     assert_throw(signature_calculate(sig, key->material(), *hash, global_ctx));
     /* now unlock the key and sign */
-    pgp_password_provider_t pswd_prov = {.callback = rnp_password_provider_string,
-                                         .userdata = (void *) "password"};
+    pgp_password_provider_t pswd_prov(rnp_password_provider_string, (void *) "password");
     assert_true(key->unlock(pswd_prov));
     hash = hash_orig->clone();
     signature_calculate(sig, key->material(), *hash, global_ctx);
@@ -850,7 +849,11 @@ TEST_F(rnp_tests, test_stream_key_decrypt)
     assert_rnp_success(process_pgp_keys(keysrc, keyseq, false));
     assert_non_null(key = &keyseq.keys.front());
     assert_rnp_failure(decrypt_secret_key(&key->key, "passw0rd"));
+#if defined(ENABLE_IDEA)
     assert_rnp_success(decrypt_secret_key(&key->key, "password"));
+#else
+    assert_rnp_failure(decrypt_secret_key(&key->key, "password"));
+#endif
     src_close(&keysrc);
 
     /* rsa/rsa secret key */
@@ -1087,7 +1090,6 @@ validate_key_sigs(const char *path)
 {
     rnp_key_store_t *pubring = new rnp_key_store_t(PGP_KEY_STORE_GPG, path, global_ctx);
     bool             valid = rnp_key_store_load_from_path(pubring, NULL);
-    assert_true(valid);
     for (auto &key : pubring->keys) {
         key.validate(*pubring);
         valid = valid && key.valid();
@@ -1295,7 +1297,7 @@ TEST_F(rnp_tests, test_y2k38)
     /* verify */
     rnpcfg.set_str(CFG_INFILE, "data/test_messages/future.pgp");
     rnpcfg.set_bool(CFG_OVERWRITE, true);
-    assert_true(cli_rnp_process_file(&rnp));
+    assert_false(cli_rnp_process_file(&rnp));
 
     /* clean up and flush the file */
     rnp.end();
@@ -1337,14 +1339,11 @@ TEST_F(rnp_tests, test_stream_dumper_y2k38)
     auto   last = written + dst.writeb;
     time_t timestamp = 2958774690;
     // regenerate time for the current timezone
-    char buf[26] = {0};
-    strncpy(buf, rnp_ctime(timestamp), sizeof(buf));
-    buf[24] = '\0';
     std::string correct = "creation time: 2958774690 (";
     if (rnp_y2k38_warning(timestamp)) {
         correct += ">=";
     }
-    correct += buf;
+    correct += rnp_ctime(timestamp).substr(0, 24);
     correct += ')';
     assert_true(std::search(written, last, correct.begin(), correct.end()) != last);
     dst_close(&dst, false);

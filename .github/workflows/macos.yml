@@ -4,12 +4,12 @@ on:
   push:
     branches:
       - master
+      - main
       - 'release/**'
     paths-ignore:
       - '/*.sh'
       - '/.*'
       - '/_*'
-      - '/vcpkg.txt'
       - 'docs/**'
       - '**.adoc'
       - '**.md'
@@ -22,12 +22,15 @@ on:
       - '/*.sh'
       - '/.*'
       - '/_*'
-      - '/vcpkg.txt'
       - 'docs/**'
       - '**.adoc'
       - '**.md'
       - '**.nix'
       - 'flake.lock'
+
+concurrency:
+  group: '${{ github.workflow }}-${{ github.job }}-${{ github.head_ref || github.ref_name }}'
+  cancel-in-progress: true
 
 env:
   CORES: 2
@@ -42,7 +45,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-10.15, macos-11.0]
+        os: [macos-11, macos-12]
         env:
           - CC: gcc
             CXX: g++
@@ -52,16 +55,17 @@ jobs:
     env: ${{ matrix.env }}
     timeout-minutes: 250
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
         with:
           fetch-depth: 1
+          submodules: true
       - name: Setup environment
         run: |
           . ci/gha/setup-env.inc.sh
           ci/install_noncacheable_dependencies.sh
       - name: Cache
         id: cache
-        uses: actions/cache@v2
+        uses: actions/cache@v3
         with:
           path: ${{ env.CACHE_DIR }}
           key: ${{ github.workflow }}-${{ matrix.os }}-${{ env.BUILD_MODE }}-${{ matrix.env.CC }}-gpg-${{ env.GPG_VERSION }}-${{ hashFiles('ci/**') }}-${{ hashFiles('.github/workflows/**') }}

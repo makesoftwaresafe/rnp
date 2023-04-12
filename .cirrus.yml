@@ -3,8 +3,8 @@ freebsd_instance:
 
 task:
   name: build
-  only_if: $CIRRUS_BRANCH == 'master' || $CIRRUS_BRANCH =~ 'release/.*' || $CIRRUS_PR != ''
-  skip: "!changesInclude('.cirrus.yml') && changesIncludeOnly('/*.sh', '/.*', '/_*', '/vcpkg.txt', 'Brewfile', 'docs/**', '**.adoc', '**.md', '**.nix', 'flake.lock', '.github/**') || $CIRRUS_CHANGE_MESSAGE =~ '.*skip ci.*'"
+  only_if: $CIRRUS_BRANCH == 'master' || $CIRRUS_BRANCH == 'main' || $CIRRUS_BRANCH =~ 'release/.*' || $CIRRUS_PR != ''
+  skip: "!changesInclude('.cirrus.yml') && changesIncludeOnly('/*.sh', '/.*', '/_*', 'Brewfile', 'docs/**', '**.adoc', '**.md', '**.nix', 'flake.lock', '.github/**') || $CIRRUS_CHANGE_MESSAGE =~ '.*skip ci.*'"
   # increase timeout since we use a single task for building cache and testing
   timeout_in: 90m
   env:
@@ -13,6 +13,7 @@ task:
     LOCAL_BUILDS: /home/rnpuser/local-builds
     LOCAL_INSTALLS: /home/rnpuser/local-installs
     USE_STATIC_DEPENDENCIES: yes
+    CIRRUS_CLONE_SUBMODULES: true
   user_setup_script: |
     # workaround 'pkg: repository meta has wrong version 2'
     env ASSUME_ALWAYS_YES=yes pkg bootstrap -f

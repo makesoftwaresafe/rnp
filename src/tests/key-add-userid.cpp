@@ -56,8 +56,7 @@ TEST_F(rnp_tests, test_key_add_userid)
     assert_non_null(key);
 
     // unlock the key
-    pgp_password_provider_t pprov = {.callback = string_copy_password_callback,
-                                     .userdata = (void *) "password"};
+    pgp_password_provider_t pprov(string_copy_password_callback, (void *) "password");
     assert_true(key->unlock(pprov));
 
     // save the counts for a few items
@@ -71,11 +70,19 @@ TEST_F(rnp_tests, test_key_add_userid)
     selfsig0.key_expiration = base_expiry;
     selfsig0.primary = false;
     key->add_uid_cert(selfsig0, PGP_HASH_SHA1, global_ctx);
-    // attempt to add sha1-signed uid and make sure it fails
+    // attempt to add sha1-signed uid and make sure it succeeds now and fails after the cutoff
+    // date in 2024
+    assert_int_equal(base_expiry, key->expiration());
+    assert_int_equal(0x2, key->flags());
+    assert_true(key->get_uid(uidc).valid);
+    // delete new uid and add one in the future
+    key->del_uid(uidc);
+    global_ctx.set_time(SHA1_KEY_FROM + 2);
+    key->add_uid_cert(selfsig0, PGP_HASH_SHA1, global_ctx);
     assert_int_equal(0, key->expiration());
     assert_int_equal(0x3, key->flags());
     assert_false(key->get_uid(uidc).valid);
-    // delete invalid uid and add valid one
+    global_ctx.set_time(0);
     key->del_uid(uidc);
     assert_int_equal(uidc, key->uid_count());
     assert_int_equal(subsigc, key->sig_count());

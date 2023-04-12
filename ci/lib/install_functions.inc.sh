@@ -12,35 +12,26 @@
 : "${DIST_VERSION_ID:=}"
 
 : "${MINIMUM_CMAKE_VERSION:=3.20.0}"
-: "${MINIMUM_RUBY_VERSION:=2.5.0}"
+: "${MINIMUM_RUBY_VERSION:=3.0.0}"
 
 : "${RECOMMENDED_BOTAN_VERSION:=2.18.2}"
 : "${RECOMMENDED_JSONC_VERSION:=0.12.1}"
 : "${RECOMMENDED_CMAKE_VERSION:=3.20.5}"
 : "${RECOMMENDED_PYTHON_VERSION:=3.9.2}"
-: "${RECOMMENDED_RUBY_VERSION:=2.5.8}"
-: "${RECOMMENDED_BOTAN_VERSION_MSYS:=${RECOMMENDED_BOTAN_VERSION}-1}"
+: "${RECOMMENDED_RUBY_VERSION:=3.1.1}"
 
 : "${CMAKE_VERSION:=${RECOMMENDED_CMAKE_VERSION}}"
-# if [[ "${OS}" = msys ]]; then
-#   : "${BOTAN_VERSION:=${RECOMMENDED_BOTAN_VERSION_MSYS}}"
-# else
-#   : "${BOTAN_VERSION:=${RECOMMENDED_BOTAN_VERSION}}"
-# fi
 : "${BOTAN_VERSION:=${RECOMMENDED_BOTAN_VERSION}}"
 : "${JSONC_VERSION:=${RECOMMENDED_JSONC_VERSION}}"
 : "${PYTHON_VERSION:=${RECOMMENDED_PYTHON_VERSION}}"
 : "${RUBY_VERSION:=${RECOMMENDED_RUBY_VERSION}}"
 
+# Should minimum automake version change
+# please consider release of Ribose RPM for it
+# [https://github.com/riboseinc/rpm-spec-automake116-automake]
 
-
-if [[ "${GPG_VERSION}" = 2.3.* || "${GPG_VERSION}" = beta ]]; then
-  : "${MINIMUM_AUTOMAKE_VERSION:=1.16.3}"
-else
-  : "${MINIMUM_AUTOMAKE_VERSION:=1.16.1}"
-fi
+: "${MINIMUM_AUTOMAKE_VERSION:=1.16.3}"
 : "${RECOMMENDED_AUTOMAKE_VERSION:=1.16.4}"
-
 : "${AUTOMAKE_VERSION:=${RECOMMENDED_AUTOMAKE_VERSION}}"
 
 : "${VERBOSE:=1}"
@@ -69,6 +60,17 @@ macos_install() {
   rm /usr/local/Cellar/openssl || true
   # homebrew fails to update python 3.9.1 to 3.9.1.1 due to unlinking failure
   rm /usr/local/bin/2to3 || true
+  # homebrew fails to update python from 3.9 to 3.10 due to another unlinking failure
+  rm /usr/local/bin/idle3 || true
+  rm /usr/local/bin/pydoc3 || true
+  rm /usr/local/bin/python3 || true
+  rm /usr/local/bin/python3-config || true
+  # homebrew fails to update python from 3.11.0 to 3.11.1
+  rm /usr/local/bin/2to3-3.11 || true
+  rm /usr/local/bin/idle3.11 || true
+  rm /usr/local/bin/pydoc3.11 || true
+  rm /usr/local/bin/python3.11 || true
+  rm /usr/local/bin/python3.11-config || true
   # homebrew fails to update openssl@1.1 1.1.1l to 1.1.1l_1 due to linking failure of nghttp2.h
   brew unlink nghttp2 || true
   brew update
@@ -118,6 +120,7 @@ netbsd_install() {
 
 linux_prepare_ribose_yum_repo() {
   "${SUDO}" rpm --import https://github.com/riboseinc/yum/raw/master/ribose-packages.pub
+  "${SUDO}" rpm --import https://github.com/riboseinc/yum/raw/master/ribose-packages-next.pub
   "${SUDO}" curl -L https://github.com/riboseinc/yum/raw/master/ribose.repo \
     -o /etc/yum.repos.d/ribose.repo
 }
@@ -134,13 +137,14 @@ yum_prepare_repos() {
 
 linux_install_fedora() {
   yum_prepare_repos
-  yum_install_build_dependencies \
-    cmake
+  extra_dep=(cmake json-c-devel ruby)
+
+  yum_install_build_dependencies "${extra_dep[@]}"
   yum_install_dynamic_build_dependencies_if_needed
 
   ensure_automake
   ensure_cmake
-  ensure_ruby
+#  ensure_ruby
   rubygem_install_build_dependencies
 }
 
@@ -152,14 +156,17 @@ linux_install_centos() {
     centos-8)
       linux_install_centos8
       ;;
+    centos-9)
+      linux_install_centos9
+      ;;
     *)
-      >&2 echo "Error: unsupported CentOS version \"${DIST_VERSION_ID}\" (supported: 7, 8).  Aborting."
+      >&2 echo "Error: unsupported CentOS version \"${DIST_VERSION_ID}\" (supported: 7, 8, 9).  Aborting."
       exit 1
   esac
 }
 
 declare util_depedencies_yum=(
-  sudo # NOTE: Needed to avoid "sudo: command not found"
+  sudo
   wget
   git
 )
@@ -171,10 +178,10 @@ declare basic_build_dependencies_yum=(
   gcc-c++
   make
   autoconf
-  automake
   libtool
   bzip2
   gzip
+  ribose-automake116
 )
 
 declare build_dependencies_yum=(
@@ -184,18 +191,14 @@ declare build_dependencies_yum=(
   gettext-devel
   ncurses-devel
   python3
-  ribose-automake116
-  ruby-devel
+#  ruby-devel
   zlib-devel
 )
 
 declare dynamic_build_dependencies_yum=(
   botan2
   botan2-devel
-  json-c12-devel
-  # python2-devel # TODO: needed?
 )
-
 
 apt_install() {
   local apt_command=(apt-get -y -q install "$@")
@@ -216,13 +219,10 @@ yum_install() {
 }
 
 prepare_build_tool_env() {
-  case "${DIST}" in
-    centos)
-      post_build_tool_install_set_env
-      ;;
-  esac
-
-  prepare_rbenv_env
+  enable_llvm_toolset_7
+  enable_rh_ruby30
+  enable_ribose_automake
+#  prepare_rbenv_env
 }
 
 yum_install_build_dependencies() {
@@ -230,35 +230,58 @@ yum_install_build_dependencies() {
     "${basic_build_dependencies_yum[@]}" \
     "${build_dependencies_yum[@]}" \
     "$@"
+
+  if [[ "${CRYPTO_BACKEND:-}" == "openssl" ]]; then
+    yum_install openssl-devel
+  fi
 }
 
 linux_install_centos7() {
-  yum_prepare_repos epel-release centos-release-scl
-  yum_install_build_dependencies \
-    cmake3 \
-    rh-ruby25 rh-ruby25-ruby-devel \
-    llvm-toolset-7.0
+  yum_prepare_repos epel-release centos-release-scl centos-sclo-rh
 
+  extra_dep=(cmake3 llvm-toolset-7.0 json-c12-devel rh-ruby30)
+
+  yum_install_build_dependencies "${extra_dep[@]}"
   yum_install_dynamic_build_dependencies_if_needed
 
   ensure_automake
   ensure_cmake
-  ensure_ruby
+#  ensure_ruby
+  enable_rh_ruby30
   rubygem_install_build_dependencies
 }
 
 linux_install_centos8() {
+  "${SUDO}" "${YUM}" -y -q install 'dnf-command(config-manager)'
   "${SUDO}" "${YUM}" config-manager --set-enabled powertools
+  "${SUDO}" "${YUM}" module reset ruby -y
   yum_prepare_repos epel-release
-  yum_install_build_dependencies \
-    cmake \
-    texinfo
 
+  extra_dep=(cmake texinfo json-c-devel @ruby:3.0)
+
+  yum_install_build_dependencies "${extra_dep[@]}"
   yum_install_dynamic_build_dependencies_if_needed
 
   ensure_automake
   ensure_cmake
-  ensure_ruby
+# ensure_ruby
+  ensure_symlink_to_target /usr/bin/python3 /usr/bin/python
+  rubygem_install_build_dependencies
+}
+
+linux_install_centos9() {
+  "${SUDO}" "${YUM}" -y -q install 'dnf-command(config-manager)'
+  "${SUDO}" "${YUM}" config-manager --set-enabled crb
+  yum_prepare_repos epel-release
+
+  extra_dep=(cmake texinfo json-c-devel ruby)
+
+  yum_install_build_dependencies "${extra_dep[@]}"
+  yum_install_dynamic_build_dependencies_if_needed
+
+  ensure_automake
+  ensure_cmake
+#  ensure_ruby
   rubygem_install_build_dependencies
 }
 
@@ -294,7 +317,10 @@ install_static_cacheable_build_dependencies() {
 
   mkdir -p "$LOCAL_BUILDS"
 
-  local default=(botan jsonc gpg)
+  local default=(jsonc gpg)
+  if [[ "${CRYPTO_BACKEND:-}" != "openssl" ]]; then
+    default=(botan "${default[@]}")
+  fi
   local items=("${@:-${default[@]}}")
   for item in "${items[@]}"; do
     install_"$item"
@@ -304,7 +330,7 @@ install_static_cacheable_build_dependencies() {
 install_static_noncacheable_build_dependencies() {
   mkdir -p "$LOCAL_BUILDS"
 
-  local default=(bundler asciidoctor)
+  local default=(asciidoctor)
   local items=("${@:-${default[@]}}")
   for item in "${items[@]}"; do
     install_"$item"
@@ -312,7 +338,6 @@ install_static_noncacheable_build_dependencies() {
 }
 
 rubygem_install_build_dependencies() {
-  install_bundler
   install_asciidoctor
 }
 
@@ -361,6 +386,7 @@ ensure_cmake() {
   pushd "$(mktemp -d)" || return 1
 
   install_prebuilt_cmake Linux-x86_64
+#  build_and_install_cmake
 
   command -v cmake
 
@@ -413,22 +439,25 @@ build_and_install_python() {
   curl -L -o python.tar.xz https://www.python.org/ftp/python/"${PYTHON_VERSION}"/Python-"${PYTHON_VERSION}".tar.xz
   tar -xf python.tar.xz --strip 1
   ./configure --enable-optimizations --prefix=/usr && ${MAKE} -j"${MAKE_PARALLEL}" && "${SUDO}" make install
-  ${SUDO} ln -sf /usr/bin/python3 /usr/bin/python
+  ensure_symlink_to_target /usr/bin/python3 /usr/bin/python
   popd
 }
 
-# Make sure automake is at least 1.16.3+ as required by GnuPG 2.3.
-# If not, build automake from source.
+# Make sure automake is at least $MINIMUM_AUTOMAKE_VERSION (1.16.3) as required by GnuPG 2.3
+# - We assume that on fedora/centos ribose rpm was used (see basic_build_dependencies_yum)
+# - If automake version is less then reuired automake build it from source
 ensure_automake() {
 
-  local automake_version
+  local using_ribose_automake=
+  enable_ribose_automake
+
+  local automake_version=
   automake_version=$({
     command -v automake >/dev/null && command automake --version
     } | head -n1 | cut -f4 -d' '
   )
 
   local need_to_build_automake=
-
   if ! is_version_at_least automake "${MINIMUM_AUTOMAKE_VERSION}" echo "${automake_version}"; then
     >&2 echo "automake version lower than ${MINIMUM_AUTOMAKE_VERSION}."
     need_to_build_automake=1
@@ -439,31 +468,53 @@ ensure_automake() {
     return
   fi
 
+  # Disable and automake116 from Ribose's repository as that may be too old.
+  if [[ "${using_ribose_automake}" == 1 ]]; then
+    >&2 echo "ribose-automake116 does not meet version requirements, disabling and removing."
+    . /opt/ribose/ribose-automake116/disable
+    "${SUDO}" rpm -e ribose-automake116
+    using_ribose_automake=0
+  fi
+
   >&2 echo "automake rebuild is needed."
-
   pushd "$(mktemp -d)" || return 1
-
   build_and_install_automake
 
-  # Disable automake116 from Ribose's repository as that may be too old.
-  case "${DIST}" in
-    centos)
-      if [[ -r /opt/ribose/ribose-automake116/disable ]]; then
-        >&2 echo "ribose-automake116 will be disabled."
-        . /opt/ribose/ribose-automake116/disable
-      fi
+  command -v automake
+  popd
+}
 
-      if rpm --quiet -q ribose-automake116; then
-        >&2 echo "ribose-automake116 is installed.  Removing."
-        # "${SUDO}" "${YUM}" remove -y ribose-automake116
-        "${SUDO}" rpm -e ribose-automake116
+enable_ribose_automake() {
+  case "${DIST}" in
+    centos|fedora)
+      if rpm --quiet -q ribose-automake116 && [[ "$PATH" != */opt/ribose/ribose-automake116/root/usr/bin* ]]; then
+        ACLOCAL_PATH=$(scl enable ribose-automake116 -- aclocal --print-ac-dir):$(rpm --eval '%{_datadir}/aclocal')
+        export ACLOCAL_PATH
+        . /opt/ribose/ribose-automake116/enable
+        >&2 echo "Ribose automake was enabled."
+        using_ribose_automake=1
       fi
       ;;
   esac
+}
 
-  command -v automake
+enable_llvm_toolset_7() {
+  if [[ "${DIST_VERSION}" == "centos-7" ]] && \
+     rpm --quiet -q llvm-toolset-7.0 && \
+     [[ "$PATH" != */opt/rh/llvm-toolset-7.0/root/usr/bin* ]]; then
+    . /opt/rh/llvm-toolset-7.0/enable
+  fi
+}
 
-  popd
+enable_rh_ruby30() {
+  if [[ "${DIST_VERSION}" == "centos-7" ]] && \
+     rpm --quiet -q rh-ruby30 && \
+     [[ "$PATH" != */opt/rh/rh-ruby30/root/usr/bin* ]]; then
+    . /opt/rh/rh-ruby30/enable
+    PATH=$HOME/bin:$PATH
+    export PATH
+    export SUDO_GEM="run"
+  fi
 }
 
 build_and_install_automake() {
@@ -471,9 +522,11 @@ build_and_install_automake() {
   automake_build=${LOCAL_BUILDS}/automake
   mkdir -p "${automake_build}"
   pushd "${automake_build}"
-  curl -L -o automake.tar.xz https://ftp.gnu.org/gnu/automake/automake-${AUTOMAKE_VERSION}.tar.xz
+  curl -L -o automake.tar.xz "https://ftp.gnu.org/gnu/automake/automake-${AUTOMAKE_VERSION}.tar.xz"
   tar -xf automake.tar.xz --strip 1
-  ./configure --enable-optimizations --prefix=/usr && ${MAKE} -j"${MAKE_PARALLEL}" && ${SUDO} make install
+  ./configure --enable-optimizations --prefix=/usr
+  "${MAKE}" -j"${MAKE_PARALLEL}"
+  "${SUDO}" "${MAKE}" install
   popd
 }
 
@@ -557,7 +610,6 @@ declare ruby_build_dependencies_ubuntu=(
   curl
   libbz2-dev
   libssl-dev
-  ruby-bundler
   rubygems
   zlib1g-dev
 )
@@ -567,7 +619,6 @@ declare ruby_build_dependencies_deb=(
   curl
   libbz2-dev
   libssl-dev
-  ruby-bundler
   rubygems
   zlib1g-dev
 )
@@ -591,7 +642,8 @@ linux_install_debian() {
   fi
 
   ensure_automake
-  build_and_install_cmake
+  ensure_ruby
+  ensure_cmake
 }
 
 linux_install() {
@@ -626,7 +678,6 @@ msys_install() {
                clang64/mingw-w64-clang-x86_64-openmp
                clang64/mingw-w64-clang-x86_64-libc++
                clang64/mingw-w64-clang-x86_64-libbotan
-               clang64/mingw-w64-clang-x86_64-libssp
                clang64/mingw-w64-clang-x86_64-json-c
                clang64/mingw-w64-clang-x86_64-libsystre
     )
@@ -634,10 +685,6 @@ msys_install() {
 
   pacman --noconfirm -S --needed "${packages[@]}"
 
-  # msys includes ruby 2.6.1 while we need lower version
-  #wget http://repo.msys2.org/mingw/x86_64/mingw-w64-x86_64-ruby-2.5.3-1-any.pkg.tar.xz -O /tmp/ruby-2.5.3.pkg.tar.xz
-  #pacman --noconfirm --needed -U /tmp/ruby-2.5.3.pkg.tar.xz
-  #rm /tmp/ruby-2.5.3.pkg.tar.xz
 }
 
 # Mainly for all python scripts with shebangs pointing to
@@ -664,31 +711,19 @@ run_in_python_venv() {
   )
 }
 
-# ruby-rnp
-install_bundler() {
-  gem_install bundler bundle
-}
-
 install_asciidoctor() {
   gem_install asciidoctor
 }
 
 declare ruby_build_dependencies_yum=(
-  git-core
   zlib
   zlib-devel
-  gcc-c++
   patch
-  readline
   readline-devel
   libyaml-devel
   libffi-devel
   openssl-devel
-  make
   bzip2
-  autoconf
-  automake
-  libtool
   bison
   curl
   sqlite-devel
@@ -699,11 +734,6 @@ ensure_ruby() {
   if is_version_at_least ruby "${MINIMUM_RUBY_VERSION}" command ruby -e 'puts RUBY_VERSION'; then
     return
   fi
-
-  # XXX: Fedora20 seems to have problems installing ruby build dependencies in
-  # yum?
-  # "${YUM}" repolist all
-  # "${SUDO}" rpm -qa | sort
 
   if [[ "${DIST_VERSION}" = fedora-20 ]]; then
     ruby_build_dependencies_yum+=(--enablerepo=updates-testing)
@@ -716,7 +746,7 @@ ensure_ruby() {
       rbenv install -v "${RUBY_VERSION}"
       rbenv global "${RUBY_VERSION}"
       rbenv rehash
-      sudo chown -R "$(whoami)" "$(rbenv prefix)"
+      "${SUDO}" chown -R "$(whoami)" "$(rbenv prefix)"
       ;;
     debian)
       apt_install "${ruby_build_dependencies_deb[@]}"
@@ -726,7 +756,7 @@ ensure_ruby() {
       ;;
     *)
       # TODO: handle ubuntu?
-      >&2 echo Error: Need to install ruby ${MINIMUM_RUBY_VERSION}+
+      >&2 echo "Error: Need to install ruby ${MINIMUM_RUBY_VERSION}+"
       exit 1
   esac
 }
@@ -787,8 +817,8 @@ is_version_at_least() {
     installed_version_minor="${installed_version_minor:-0}"
     installed_version_patch="${installed_version#${installed_version_major}.}"
     installed_version_patch="${installed_version_patch#${installed_version_minor}}"
-    installed_version_patch="${installed_version_patch#.}"
-    installed_version_patch="${installed_version_patch%%.*}"
+    installed_version_patch="${installed_version_patch#[.-]}"
+    installed_version_patch="${installed_version_patch%%[.-]*}"
     installed_version_patch="${installed_version_patch:-0}"
 
     local need_version_major
@@ -802,14 +832,6 @@ is_version_at_least() {
     need_version_patch="${need_version_patch#.}"
     need_version_patch="${need_version_patch%%.*}"
     need_version_patch="${need_version_patch:-0}"
-
-    >&2 echo "
-    -> installed_version_major=${installed_version_major}
-    -> installed_version_minor=${installed_version_minor}
-    -> installed_version_patch=${installed_version_patch}
-    -> need_version_major=${need_version_major}
-    -> need_version_minor=${need_version_minor}
-    -> need_version_patch=${need_version_patch}"
 
     # Naive semver comparison
     if [[ "${installed_version_major}" -lt "${need_version_major}" ]] || \
@@ -846,24 +868,8 @@ gem_install() {
   fi
 }
 
-# build+install
-build_and_install() {
-
-  export cmakeopts=(
-    -DBUILD_SHARED_LIBS="${BUILD_SHARED_LIBS}"
-    -DBUILD_TESTING=no
-    -DCMAKE_INSTALL_PREFIX="${1:-/tmp}"
-  )
-
-  if [[ $# -gt 0 ]]; then
-    shift
-  fi
-
-  build_rnp "$@"
-  make_install VERBOSE="${VERBOSE}"
-}
-
 build_rnp() {
+# shellcheck disable=SC2154
   "${CMAKE:-cmake}" "${cmakeopts[@]}" "${1:-.}"
 }
 
@@ -884,92 +890,4 @@ is_true_cmake_bool() {
       >&2 echo "Warning: unrecognized boolean expression ($arg).  Continuing and interpreting as 'false' anyway."
       false
   esac
-}
-
-# check for install issues
-check_build() {
-  if is_true_cmake_bool "${BUILD_SHARED_LIBS}"; then
-    export pkgflags=
-    export gccflags=
-    if ! find /usr/lib64/ -maxdepth 1 -type f -name 'librnp*.so' | grep -q . || \
-         find /usr/lib64/ -maxdepth 1 -type f -name 'librnp*.a'  | grep -q .; then
-      >&2 echo "librnp installed libraries incorrect"
-    fi
-  else
-    export pkgflags=--static
-    export gccflags=-lstdc++
-    if  find /usr/lib64/ -maxdepth 1 -type f -name 'librnp*.so' | grep -q . || \
-      ! find /usr/lib64/ -maxdepth 1 -type f -name 'librnp*.a'  | grep -q .; then
-      >&2 echo "librnp installed libraries incorrect"
-    fi
-  fi
-}
-
-# build an example using pkg-config
-build_example_pkgconfig() {
-  local rnpsrc="$PWD"
-  pushd "$(mktemp -d)" || return 1
-
-  # shellcheck disable=SC2046
-  gcc "${rnpsrc}/src/examples/generate.c" -ogenerate $(pkg-config --cflags --libs $pkgflags librnp) $gccflags
-  ./generate
-  readelf -d generate
-  if is_true_cmake_bool "${BUILD_SHARED_LIBS}"; then
-    readelf -d generate | grep -q 'librnp\>'
-  else
-    readelf -d generate | grep -qv 'librnp\>'
-  fi
-
-  # remove the pkgconfig for the next test
-  >&2 echo "Checking if librnp- is found in pkg-config list:"
-  pkg-config --list-all
-  pkg-config --list-all | grep -q '^librnp\>'
-
-  # XXX: debug
-  find /usr/lib64 -type f -name 'librnp*'
-  find /usr/lib -type f -name 'librnp*'
-
-  find /usr/lib64/pkgconfig -regextype sed -regex '.*librnp\>.*' -exec rm {} +
-
-  # XXX: debug
-  find /usr/lib64 -type f -name 'librnp*'
-  find /usr/lib -type f -name 'librnp*'
-
-  # should not be found
-  >&2 echo "Checking if librnp- is NOT found in pkg-config list:"
-  pkg-config --list-all
-  pkg-config --list-all | grep -qv '^librnp\>'
-
-  # build an example using cmake targets
-  mkdir rnp-project
-  pushd rnp-project || return 1
-
-  cat <<"EOF" > mytest.cpp
-  #include <rnp/rnp.h>
-
-  int main(int argc, char *argv[]) {
-      printf("RNP version: %s\n", rnp_version_string());
-      return 0;
-  }
-EOF
-
-  cat <<"EOF" > CMakeLists.txt
-  set(CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}")
-  find_package(BZip2 REQUIRED)
-  find_package(ZLIB REQUIRED)
-  find_package(JSON-C 0.11 REQUIRED)
-  find_package(Botan2 2.14.0 REQUIRED)
-  find_package(rnp REQUIRED)
-
-  cmake_minimum_required(VERSION 3.12)
-  add_executable(mytest mytest.cpp)
-  target_link_libraries(mytest rnp::librnp)
-EOF
-
-  cp "${rnpsrc}"/cmake/Modules/* .
-  cmake .
-  make VERBOSE="${VERBOSE}"
-  ./mytest
-  popd
-  popd
 }

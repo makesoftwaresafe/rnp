@@ -29,7 +29,8 @@
 # 3.12+ for NAMELINK_COMPONENT (for better RPM packaging)
 # 3.12+ for Python3 find module
 # 3.14+ for object library link dependency propagation
-cmake_minimum_required(VERSION 3.14)
+# 3.18+ for OpenSSL::applink
+cmake_minimum_required(VERSION 3.18)
 
 # contact email, other info
 include(cmake/info.cmake)
@@ -49,20 +50,32 @@ project(RNP
   DESCRIPTION "${PACKAGE_DESCRIPTION_SHORT}"
 )
 
+# tri-state options
+set(TRISTATE_VALUES On Off Auto)
+
 # options
 option(ENABLE_COVERAGE "Enable code coverage testing.")
 option(ENABLE_SANITIZERS "Enable ASan and other sanitizers.")
 option(ENABLE_FUZZERS "Enable fuzz targets.")
 option(DOWNLOAD_GTEST "Download Googletest" On)
-option(DOWNLOAD_RUBYRNP "Download ruby-rnp and run related tests." On)
 # crypto components
-option(ENABLE_SM2 "Enable SM2/SM3/SM4 algorithms support." On)
-option(ENABLE_AEAD "Enable AEAD ciphers support." On)
-option(ENABLE_TWOFISH "Enable Twofish cipher support." On)
-option(ENABLE_BRAINPOOL "Enable Brainpool curves support." On)
-
-# tri-state options
-set(TRISTATE_VALUES On Off Auto)
+function(tristate_feature_auto NAME DESCRIPTION)
+  set(${NAME} Auto CACHE STRING ${DESCRIPTION})
+  set_property(CACHE ${NAME} PROPERTY STRINGS ${TRISTATE_VALUES})
+endfunction()
+set(ENABLE_SM2 Auto CACHE STRING "Enable SM2/SM3/SM4 algorithms support.")
+set_property(CACHE ENABLE_SM2 PROPERTY STRINGS ${TRISTATE_VALUES})
+set(ENABLE_AEAD Auto CACHE STRING "Enable AEAD ciphers support.")
+set_property(CACHE ENABLE_AEAD PROPERTY STRINGS ${TRISTATE_VALUES})
+set(ENABLE_TWOFISH Auto CACHE STRING "Enable Twofish cipher support.")
+set_property(CACHE ENABLE_TWOFISH PROPERTY STRINGS ${TRISTATE_VALUES})
+set(ENABLE_BRAINPOOL Auto CACHE STRING "Enable Brainpool curves support.")
+set_property(CACHE ENABLE_BRAINPOOL PROPERTY STRINGS ${TRISTATE_VALUES})
+set(ENABLE_IDEA Auto CACHE STRING "Enable IDEA algorithm support.")
+set_property(CACHE ENABLE_IDEA PROPERTY STRINGS ${TRISTATE_VALUES})
+tristate_feature_auto(ENABLE_BLOWFISH "Enable Blowfish cipher support.")
+tristate_feature_auto(ENABLE_CAST5 "Enable CAST5 cipher support.")
+tristate_feature_auto(ENABLE_RIPEMD160 "Enable RIPEMD-160 hash support.")
 
 set(ENABLE_DOC Auto CACHE STRING "Enable building documentation.")
 set_property(CACHE ENABLE_DOC PROPERTY STRINGS ${TRISTATE_VALUES})
@@ -72,6 +85,7 @@ set(CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake/Modules")
 
 # required modules
 include(CTest)
+include(FetchContent)
 
 # default to a release build
 if (NOT CMAKE_BUILD_TYPE)
@@ -88,26 +102,11 @@ if (NOT CRYPTO_BACKEND)
     FORCE
   )
 endif()
-if(CRYPTO_BACKEND STREQUAL "botan")
+string(TOLOWER ${CRYPTO_BACKEND} CRYPTO_BACKEND_LOWERCASE)
+if(CRYPTO_BACKEND_LOWERCASE STREQUAL "botan")
   # Default value;
   set(CRYPTO_BACKEND_BOTAN 1)
-elseif(CRYPTO_BACKEND STREQUAL "openssl")
-  # Do not allow OpenSSL backend in release builds yet.
-  if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
-    message(WARNING "OpenSSL backend should be used only at debug mode and not ready for release yet!")
-  endif()
-  # Disable all unsupported features and leave lines below for the future.
-  set(ENABLE_SM2 Off CACHE BOOL "" FORCE)
-  set(ENABLE_AEAD Off CACHE BOOL "" FORCE)
-  set(ENABLE_TWOFISH Off CACHE BOOL "" FORCE)
-  set(ENABLE_BRAINPOOL Off CACHE BOOL "" FORCE)
-  # No SM2 support for OpenSSL yet.
-  if (ENABLE_SM2)
-    message(FATAL_ERROR "OpenSSL backend doesn't support SM2/SM3/SM4 algorithms yet.")
-  endif()
-  if (ENABLE_AEAD)
-    message(FATAL_ERROR "OpenSSL backend doesn't support AEAD ciphers yet.")
-  endif()
+elseif(CRYPTO_BACKEND_LOWERCASE STREQUAL "openssl")
   set(CRYPTO_BACKEND_OPENSSL 1)
 else()
   message(FATAL_ERROR "Invalid crypto backend: ${CRYPTO_BACKEND}")
@@ -127,7 +126,7 @@ if(NOT MSVC)
     -Wno-unused-parameter
     -Wno-missing-field-initializers
   )
-endif()
+endif(NOT MSVC)
 
 # MSYS-specific options
 if(MSYS)
@@ -139,7 +138,12 @@ if(MSYS)
     -fstack-protector
     -fopenmp
   )
-endif()
+endif(MSYS)
+
+# THis works both for MSVC and CL on Windows
+if(WIN32 AND NOT MSYS)
+  add_compile_definitions(_CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_DEPRECATE)
+endif(WIN32 AND NOT MSYS)
 
 # set a few other things at the top level to prevent incompatibilities
 set(CMAKE_C_STANDARD 99)
@@ -147,14 +151,6 @@ set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 add_definitions(-D_GNU_SOURCE)
-
-if(MSVC_VERSION GREATER_EQUAL "1900")
-    include(CheckCXXCompilerFlag)
-    CHECK_CXX_COMPILER_FLAG("/std:c++latest" _cpp_latest_flag_supported)
-    if (_cpp_latest_flag_supported)
-        add_compile_options("/std:c++latest")
-    endif()
-endif()
 
 if (ENABLE_COVERAGE OR ENABLE_SANITIZERS)
   message("Forcing build type to Debug (for code coverage or sanitizers).")
@@ -191,6 +187,12 @@ if (ENABLE_FUZZERS)
   add_compile_options(-DFUZZERS_ENABLED=1)
 endif()
 add_subdirectory(src/common)
+
+set(WITH_SEXP_CLI OFF)
+set(WITH_SEXP_TESTS OFF)
+set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME development)
+add_subdirectory(src/libsexp EXCLUDE_FROM_ALL)
+
 add_subdirectory(src/lib)
 add_subdirectory(src/rnp)
 add_subdirectory(src/rnpkeys)
@@ -211,6 +213,6 @@ if (BUILD_TESTING)
   add_subdirectory(src/tests)
 endif()
 
+
 # cpack packaging (RPM etc)
 include(cmake/packaging.cmake)
-

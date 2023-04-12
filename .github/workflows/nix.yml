@@ -10,7 +10,6 @@ on:
       - '/*.sh'
       - '/.*'
       - '/_*'
-      - '/vcpkg.txt'
       - 'docs/**'
       - '**.adoc'
       - '**.md'
@@ -22,7 +21,6 @@ on:
       - '/*.sh'
       - '/.*'
       - '/_*'
-      - '/vcpkg.txt'
       - 'docs/**'
       - '**.adoc'
       - '**.md'
@@ -38,10 +36,11 @@ jobs:
     if: "!contains(github.event.head_commit.message, 'skip ci')"
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
         with:
           fetch-depth: 1
+          submodules: true
       - uses: cachix/install-nix-action@v15
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - run: nix build
+      - run: nix build .?submodules=1

@@ -38,6 +38,9 @@ if (CRYPTO_BACKEND_OPENSSL)
   include(FindOpenSSL)
   find_package(OpenSSL 1.1.1 REQUIRED)
   include(FindOpenSSLFeatures)
+  if("${OPENSSL_VERSION}" VERSION_GREATER_EQUAL "3.0.0")
+    set(CRYPTO_BACKEND_OPENSSL3 1)
+  endif()
 endif()
 
 # generate a config.h
@@ -64,9 +67,65 @@ check_cxx_symbol_exists(_O_BINARY fcntl.h HAVE__O_BINARY)
 check_cxx_symbol_exists(_tempnam stdio.h HAVE__TEMPNAM)
 set(HAVE_ZLIB_H "${ZLIB_FOUND}")
 set(HAVE_BZLIB_H "${BZIP2_FOUND}")
-configure_file(config.h.in config.h)
 # generate a version.h
 configure_file(version.h.in version.h)
+
+# Checks feature in CRYPTO_BACKEND and puts the result into variable whose name is stored in RESULT_VARNAME variable.
+function(backend_has_feature FEATURE RESULT_VARNAME)
+  if (CRYPTO_BACKEND_LOWERCASE STREQUAL "botan")
+    check_cxx_symbol_exists("BOTAN_HAS_${FEATURE}" botan/build.h ${RESULT_VARNAME})
+  else()
+  message(STATUS "Looking for OpenSSL feature ${FEATURE}")
+    OpenSSLHasFeature(${FEATURE} ${RESULT_VARNAME})
+    if (${RESULT_VARNAME})
+      message(STATUS "Looking for OpenSSL feature ${FEATURE} - found")
+    endif()
+    set(${RESULT_VARNAME} "${${RESULT_VARNAME}}" PARENT_SCOPE)
+  endif()
+endfunction()
+
+function(resolve_feature_state RNP_FEATURE BACKEND_FEATURES)
+  if (NOT ${RNP_FEATURE}) # User has explicitly disabled this feature
+    return()
+  endif()
+
+  string(TOLOWER "${${RNP_FEATURE}}" ${RNP_FEATURE})
+  if (${RNP_FEATURE} STREQUAL "auto")
+    set(MESSAGE_TYPE "NOTICE")
+    set(OUTCOME "Disabling")
+  else() # User has explicitly enabled this feature
+    set(MESSAGE_TYPE "FATAL_ERROR")
+    set(OUTCOME "Aborting")
+  endif()
+
+  foreach(feature ${BACKEND_FEATURES})
+    backend_has_feature("${feature}" _has_${feature})
+    if (NOT ${_has_${feature}})
+      set(${RNP_FEATURE} Off CACHE STRING "Autodetected" FORCE)
+      message(${MESSAGE_TYPE} "${RNP_FEATURE} requires ${CRYPTO_BACKEND} feature which is missing: ${feature}. ${OUTCOME}.")
+      return()
+    endif()
+  endforeach()
+  set(${RNP_FEATURE} On CACHE STRING "Autodetected" FORCE)
+endfunction()
+
+function(openssl_nope RNP_FEATURE REASON)
+  if (NOT ${RNP_FEATURE}) # User has explicitly disabled this feature
+    return()
+  endif()
+
+  string(TOLOWER "${${RNP_FEATURE}}" ${RNP_FEATURE})
+  if (${RNP_FEATURE} STREQUAL "auto")
+    set(MESSAGE_TYPE "NOTICE")
+    set(OUTCOME "Disabling")
+  else() # User has explicitly enabled this feature
+    set(MESSAGE_TYPE "FATAL_ERROR")
+    set(OUTCOME "Aborting")
+  endif()
+
+  set(${RNP_FEATURE} Off CACHE STRING "Auto -> Off as no support" FORCE)
+  message(${MESSAGE_TYPE} "${RNP_FEATURE} doesn't work with OpenSSL backend (${REASON}). ${OUTCOME}.")
+endfunction()
 
 if(CRYPTO_BACKEND_BOTAN)
   # check botan's enabled features
@@ -75,13 +134,13 @@ if(CRYPTO_BACKEND_BOTAN)
       # base
       BIGINT FFI HEX_CODEC PGP_S2K
       # symmetric ciphers
-      BLOCK_CIPHER AES BLOWFISH CAMELLIA CAST_128 DES IDEA
+      BLOCK_CIPHER AES CAMELLIA DES
       # cipher modes
       MODE_CBC MODE_CFB
       # RNG
       AUTO_RNG AUTO_SEEDING_RNG HMAC HMAC_DRBG
       # hash
-      CRC24 HASH MD5 SHA1 SHA2_32 SHA2_64 SHA3 RIPEMD_160
+      CRC24 HASH MD5 SHA1 SHA2_32 SHA2_64 SHA3
       # public-key core
       DL_GROUP DL_PUBLIC_KEY_FAMILY ECC_GROUP ECC_PUBLIC_KEY_CRYPTO PUBLIC_KEY_CRYPTO
       # public-key algs
@@ -89,24 +148,21 @@ if(CRYPTO_BACKEND_BOTAN)
       # public-key operations etc
       EME_PKCS1v15 EMSA_PKCS1 EMSA_RAW KDF_BASE RFC3394_KEYWRAP SP800_56A
   )
-  # SM2 algorithms suite
-  if (ENABLE_SM2)
-    list(APPEND _botan_required_features SM2 SM3 SM4)
-  endif()
-  # AEAD algorithms
-  if (ENABLE_AEAD)
-    list(APPEND _botan_required_features AEAD_EAX AEAD_OCB)
-  endif()
-  # Twofish
-  if (ENABLE_TWOFISH)
-    list(APPEND _botan_required_features TWOFISH)
-  endif()
   foreach(feature ${_botan_required_features})
     check_cxx_symbol_exists("BOTAN_HAS_${feature}" botan/build.h _botan_has_${feature})
     if (NOT _botan_has_${feature})
       message(FATAL_ERROR "A required botan feature is missing: ${feature}")
     endif()
   endforeach()
+
+  resolve_feature_state(ENABLE_SM2 "SM2;SM3;SM4")
+  resolve_feature_state(ENABLE_AEAD "AEAD_EAX;AEAD_OCB")
+  resolve_feature_state(ENABLE_TWOFISH "TWOFISH")
+  resolve_feature_state(ENABLE_IDEA "IDEA")
+  # Botan supports Brainpool curves together with SECP via the ECC_GROUP define
+  resolve_feature_state(ENABLE_BLOWFISH "BLOWFISH")
+  resolve_feature_state(ENABLE_CAST5 "CAST_128")
+  resolve_feature_state(ENABLE_RIPEMD160 "RIPEMD_160")
   set(CMAKE_REQUIRED_INCLUDES)
 endif()
 if(CRYPTO_BACKEND_OPENSSL)
@@ -114,23 +170,16 @@ if(CRYPTO_BACKEND_OPENSSL)
   set(_openssl_required_features
     # symmetric ciphers
     AES-128-ECB AES-192-ECB AES-256-ECB AES-128-CBC AES-192-CBC AES-256-CBC
-    BF-ECB CAMELLIA-128-ECB CAMELLIA-192-ECB CAMELLIA-256-ECB CAST5-ECB
-    DES-EDE3 IDEA-ECB IDEA-CBC
+    AES-128-OCB AES-192-OCB AES-256-OCB
+    CAMELLIA-128-ECB CAMELLIA-192-ECB CAMELLIA-256-ECB
+    DES-EDE3
     # hashes
-    MD5 SHA1 SHA224 SHA256 SHA384 SHA512 SHA3-256 SHA3-512 RIPEMD160
+    MD5 SHA1 SHA224 SHA256 SHA384 SHA512 SHA3-256 SHA3-512
     # curves
     PRIME256V1 SECP384R1 SECP521R1 SECP256K1
     # public key
     RSAENCRYPTION DSAENCRYPTION DHKEYAGREEMENT ID-ECPUBLICKEY X25519 ED25519
   )
-  # SM2 algorithms suite
-  if (ENABLE_SM2)
-    list(APPEND _openssl_required_features SM2 SM3 SM4-ECB)
-  endif()
-  # Brainpool curves
-  if (ENABLE_BRAINPOOL)
-    list(APPEND _openssl_required_features BRAINPOOLP256R1 BRAINPOOLP384R1 BRAINPOOLP512R1)
-  endif()
   foreach(feature ${_openssl_required_features})
     message(STATUS "Looking for OpenSSL feature ${feature}")
     OpenSSLHasFeature("${feature}" _openssl_has_${feature})
@@ -139,7 +188,19 @@ if(CRYPTO_BACKEND_OPENSSL)
     endif()
     message(STATUS "Looking for OpenSSL feature ${feature} - found")
   endforeach()
+
+  resolve_feature_state(ENABLE_BRAINPOOL "BRAINPOOLP256R1;BRAINPOOLP384R1;BRAINPOOLP512R1")
+  resolve_feature_state(ENABLE_IDEA "IDEA-ECB;IDEA-CBC")
+  resolve_feature_state(ENABLE_BLOWFISH "BF-ECB")
+  resolve_feature_state(ENABLE_CAST5 "CAST5-ECB")
+  resolve_feature_state(ENABLE_RIPEMD160 "RIPEMD160")
+  resolve_feature_state(ENABLE_AEAD "AES-128-OCB;AES-192-OCB;AES-256-OCB")
+  openssl_nope(ENABLE_SM2 "it's on our roadmap, see https://github.com/rnpgp/rnp/issues/1877")
+  #resolve_feature_state(ENABLE_SM2 "SM2;SM3;SM4-ECB")
+  openssl_nope(ENABLE_TWOFISH "Twofish isn't and won't be supported by OpenSSL, see https://github.com/openssl/openssl/issues/2046")
 endif()
+
+configure_file(config.h.in config.h)
 
 if(CRYPTO_BACKEND_OPENSSL)
   set(CRYPTO_SOURCES
@@ -237,7 +298,6 @@ add_library(librnp-obj OBJECT
   pass-provider.cpp
   pgp-key.cpp
   rnp.cpp
-  $<TARGET_OBJECTS:rnp-common>
 )
 
 get_target_property(_comp_options librnp-obj COMPILE_OPTIONS)
@@ -268,6 +328,8 @@ elseif (CRYPTO_BACKEND_OPENSSL)
   target_link_libraries(librnp-obj PRIVATE OpenSSL::Crypto)
 endif()
 
+target_link_libraries(librnp-obj PRIVATE sexp)
+
 set_target_properties(librnp-obj PROPERTIES CXX_VISIBILITY_PRESET hidden)
 if (TARGET BZip2::BZip2)
   target_link_libraries(librnp-obj PRIVATE BZip2::BZip2)
@@ -282,6 +344,10 @@ else()
 endif()
 
 add_library(librnp $<TARGET_OBJECTS:librnp-obj> $<TARGET_OBJECTS:rnp-common>)
+if (OpenSSL::applink)
+  target_link_libraries(librnp PRIVATE OpenSSL::applink)
+endif(OpenSSL::applink)
+
 set_target_properties(librnp
   PROPERTIES
     VERSION "${RNP_VERSION}"
@@ -292,6 +358,14 @@ set_target_properties(librnp
 
 if (BUILD_SHARED_LIBS)
   add_library(librnp-static STATIC $<TARGET_OBJECTS:librnp-obj> $<TARGET_OBJECTS:rnp-common>)
+  if (OpenSSL::applink)
+    target_link_libraries(librnp-static PRIVATE OpenSSL::applink)
+  endif(OpenSSL::applink)
+  if (NOT WIN32)
+# On Unix like systems we will build/install/pack shared and static libraries librnp.so and librnp.a
+# On Windows we will build/install/pack dynamic, import and  static libraries rnp.dll, rnp.lib and rnp-static.lib
+    set_target_properties(librnp-static PROPERTIES OUTPUT_NAME "rnp")
+  endif (NOT WIN32)
  # Limit symbols export only to rnp_* functions.
   if (APPLE)
     # use -export_symbols_list on Apple OSs
@@ -307,10 +381,14 @@ endif()
 
 foreach (prop LINK_LIBRARIES INTERFACE_LINK_LIBRARIES INCLUDE_DIRECTORIES INTERFACE_INCLUDE_DIRECTORIES)
   get_target_property(val librnp-obj ${prop})
-  set_property(TARGET librnp PROPERTY ${prop} ${val})
   if (BUILD_SHARED_LIBS)
     set_property(TARGET librnp-static PROPERTY ${prop} ${val})
+    list(REMOVE_ITEM val "$<LINK_ONLY:sexp>")
+    set_property(TARGET librnp PROPERTY ${prop} ${val})
+  else()
+    set_property(TARGET librnp PROPERTY ${prop} ${val})
   endif()
+
 endforeach()
 
 generate_export_header(librnp
@@ -335,16 +413,40 @@ else()
 endif()
 
 # add these to the rnp-targets export
+# On Unix like systems we will build/install/pack shared and static libraries librnp.so and librnp.a
+# On Windows we will build/install/pack dynamic, import and  static libraries rnp.dll, rnp.lib and rnp-static.lib
+
+# If a client application uses shared rnp library, sexp is statically linked to librnp.so
+# If a client application uses static rnp library, it still needs libsexp.a
+
+if (BUILD_SHARED_LIBS)
+# both static and shared libraries
 install(TARGETS librnp
-  EXPORT rnp-targets
-  LIBRARY
-    DESTINATION  "${CMAKE_INSTALL_LIBDIR}"
-    COMPONENT runtime
-    ${namelink_component}
-  ARCHIVE 
-    DESTINATION  "${CMAKE_INSTALL_LIBDIR}"
-    COMPONENT development
+    EXPORT rnp-targets
+    LIBRARY
+      DESTINATION  "${CMAKE_INSTALL_LIBDIR}"
+      COMPONENT runtime
+      ${namelink_component}
+    ARCHIVE
+      DESTINATION  "${CMAKE_INSTALL_LIBDIR}"
+      COMPONENT development
+  )
+
+  install(TARGETS librnp-static sexp
+    EXPORT rnp-targets
+    ARCHIVE
+      DESTINATION  "${CMAKE_INSTALL_LIBDIR}"
+      COMPONENT development
+  )
+else(BUILD_SHARED_LIBS)
+# static libraries only
+install(TARGETS librnp sexp
+    EXPORT rnp-targets
+    ARCHIVE
+      DESTINATION  "${CMAKE_INSTALL_LIBDIR}"
+      COMPONENT development
 )
+endif(BUILD_SHARED_LIBS)
 
 # install dll only for windows
 if (WIN32)
@@ -353,7 +455,7 @@ if (WIN32)
       DESTINATION "${CMAKE_INSTALL_BINDIR}"
       COMPONENT runtime
   )
-endif()
+endif(WIN32)
 
 # install headers
 install(
@@ -420,8 +522,6 @@ function(get_linked_libs libsvar dirsvar tgt)
   list(APPEND visited_targets ${tgt})
   if (imported)
     get_target_property(linkedlibs ${tgt} INTERFACE_LINK_LIBRARIES)
-  else()
-    get_target_property(linkedlibs ${tgt} LINK_LIBRARIES)
   endif()
   set(libs)
   foreach (lib ${linkedlibs})

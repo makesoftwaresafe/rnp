@@ -613,6 +613,36 @@ TEST_F(rnp_tests, test_ffi_key_generate_misc)
     assert_rnp_success(rnp_ffi_destroy(ffi));
 }
 
+TEST_F(rnp_tests, test_ffi_sec_key_offline_operations)
+{
+    rnp_ffi_t ffi = NULL;
+    assert_rnp_success(rnp_ffi_create(&ffi, "GPG", "GPG"));
+
+    /* generate subkey for offline secret key */
+    assert_true(import_all_keys(ffi, "data/test_key_edge_cases/alice-s2k-101-1-subs.pgp"));
+    rnp_key_handle_t primary = NULL;
+    assert_rnp_success(rnp_locate_key(ffi, "keyid", "0451409669FFDE3C", &primary));
+    rnp_op_generate_t subop = NULL;
+    assert_rnp_failure(rnp_op_generate_subkey_create(&subop, ffi, primary, "ECDSA"));
+    /* unlock/unprotect offline secret key */
+    assert_rnp_failure(rnp_key_unlock(primary, "password"));
+    assert_rnp_failure(rnp_key_unprotect(primary, "password"));
+    /* add userid */
+    assert_int_equal(rnp_key_add_uid(primary, "new_uid", "SHA256", 2147317200, 0x00, false),
+                     RNP_ERROR_NO_SUITABLE_KEY);
+    rnp_key_handle_destroy(primary);
+    /* generate subkey for offline secret key on card */
+    assert_rnp_success(rnp_unload_keys(ffi, RNP_KEY_UNLOAD_PUBLIC | RNP_KEY_UNLOAD_SECRET));
+    assert_true(import_all_keys(ffi, "data/test_key_edge_cases/alice-s2k-101-2-card.pgp"));
+    primary = NULL;
+    assert_rnp_success(rnp_locate_key(ffi, "keyid", "0451409669FFDE3C", &primary));
+    subop = NULL;
+    assert_rnp_failure(rnp_op_generate_subkey_create(&subop, ffi, primary, "ECDSA"));
+    rnp_key_handle_destroy(primary);
+
+    rnp_ffi_destroy(ffi);
+}
+
 TEST_F(rnp_tests, test_ffi_key_generate_rsa)
 {
     rnp_ffi_t ffi = NULL;
@@ -1150,7 +1180,7 @@ TEST_F(rnp_tests, test_ffi_key_generate_ex)
     /* preferred ciphers */
     assert_rnp_success(rnp_op_generate_clear_pref_ciphers(keygen));
     assert_rnp_failure(rnp_op_generate_add_pref_cipher(keygen, "unknown"));
-    assert_rnp_success(rnp_op_generate_add_pref_cipher(keygen, "BLOWFISH"));
+    assert_true(!rnp_op_generate_add_pref_cipher(keygen, "BLOWFISH") == blowfish_enabled());
     assert_rnp_success(rnp_op_generate_clear_pref_ciphers(keygen));
     assert_rnp_success(rnp_op_generate_add_pref_cipher(keygen, "CAMELLIA256"));
     assert_rnp_success(rnp_op_generate_add_pref_cipher(keygen, "AES256"));
@@ -2307,32 +2337,10 @@ TEST_F(rnp_tests, test_ffi_key_iter)
         assert_null(ident);
         assert_rnp_success(rnp_identifier_iterator_destroy(it));
     }
-
-    // test with both rings empty
-    // keyid
+    // fingerprint
     {
         rnp_identifier_iterator_t it = NULL;
-        assert_rnp_success(rnp_identifier_iterator_create(ffi, &it, "keyid"));
-        assert_non_null(it);
-        const char *ident = NULL;
-        assert_rnp_success(rnp_identifier_iterator_next(it, &ident));
-        assert_null(ident);
-        assert_rnp_success(rnp_identifier_iterator_destroy(it));
-    }
-    // grip
-    {
-        rnp_identifier_iterator_t it = NULL;
-        assert_rnp_success(rnp_identifier_iterator_create(ffi, &it, "grip"));
-        assert_non_null(it);
-        const char *ident = NULL;
-        assert_rnp_success(rnp_identifier_iterator_next(it, &ident));
-        assert_null(ident);
-        assert_rnp_success(rnp_identifier_iterator_destroy(it));
-    }
-    // userid
-    {
-        rnp_identifier_iterator_t it = NULL;
-        assert_rnp_success(rnp_identifier_iterator_create(ffi, &it, "userid"));
+        assert_rnp_success(rnp_identifier_iterator_create(ffi, &it, "fingerprint"));
         assert_non_null(it);
         const char *ident = NULL;
         assert_rnp_success(rnp_identifier_iterator_next(it, &ident));
@@ -2418,6 +2426,34 @@ TEST_F(rnp_tests, test_ffi_key_iter)
               "key0-uid0", "key0-uid1", "key0-uid2", "key1-uid0", "key1-uid2", "key1-uid1"};
             size_t      i = 0;
             const char *ident = NULL;
+            do {
+                ident = NULL;
+                assert_rnp_success(rnp_identifier_iterator_next(it, &ident));
+                if (ident) {
+                    assert_true(rnp::str_case_eq(expected[i], ident));
+                    i++;
+                }
+            } while (ident);
+            assert_int_equal(i, ARRAY_SIZE(expected));
+        }
+        assert_rnp_success(rnp_identifier_iterator_destroy(it));
+    }
+
+    // fingerprint
+    {
+        rnp_identifier_iterator_t it = NULL;
+        assert_rnp_success(rnp_identifier_iterator_create(ffi, &it, "fingerprint"));
+        assert_non_null(it);
+        {
+            static const char *expected[] = {"E95A3CBF583AA80A2CCC53AA7BC6709B15C23A4A",
+                                             "E332B27CAF4742A11BAA677F1ED63EE56FADC34D",
+                                             "C5B15209940A7816A7AF3FB51D7E8A5393C997A8",
+                                             "5CD46D2A0BD0B8CFE0B130AE8A05B89FAD5ADED1",
+                                             "BE1C4AB951F4C2F6B604C7F82FCADF05FFA501BB",
+                                             "A3E94DE61A8CB229413D348E54505A936A4A970E",
+                                             "57F8ED6E5C197DB63C60FFAF326EF111425D14A5"};
+            size_t             i = 0;
+            const char *       ident = NULL;
             do {
                 ident = NULL;
                 assert_rnp_success(rnp_identifier_iterator_next(it, &ident));
@@ -3807,7 +3843,7 @@ check_key_autocrypt(rnp_output_t       memout,
                     bool               base64 = false)
 {
     rnp_ffi_t ffi = NULL;
-    assert_rnp_success(rnp_ffi_create(&ffi, "GPG", "GPG"));
+    rnp_ffi_create(&ffi, "GPG", "GPG");
 
     uint8_t *buf = NULL;
     size_t   len = 0;
@@ -3985,7 +4021,6 @@ TEST_F(rnp_tests, test_ffi_key_export_autocrypt)
     /* export secret key: make sure public is exported */
     assert_rnp_success(rnp_unload_keys(ffi, RNP_KEY_UNLOAD_PUBLIC | RNP_KEY_UNLOAD_SECRET));
     assert_true(import_all_keys(ffi, "data/test_key_validity/alice-sub-sec.pgp"));
-    assert_rnp_success(rnp_unload_keys(ffi, RNP_KEY_UNLOAD_PUBLIC));
     assert_rnp_success(rnp_locate_key(ffi, "keyid", "0451409669ffde3c", &key));
     assert_rnp_success(rnp_output_to_memory(&output, 0));
     assert_rnp_success(rnp_key_export_autocrypt(key, NULL, NULL, output, 0));
@@ -4135,8 +4170,9 @@ is_weak_signature(rnp_ffi_t ffi, rnp_signature_handle_t sig)
     rnp_signature_get_hash_alg(sig, &hash);
     rnp_signature_get_creation(sig, &creation);
     /* This approach would be more general, however hardcoding MD5/SHA1 may be used as well */
+    uint32_t flags = RNP_SECURITY_VERIFY_KEY;
     uint32_t level = 0;
-    rnp_get_security_rule(ffi, RNP_FEATURE_HASH_ALG, hash, creation, NULL, NULL, &level);
+    rnp_get_security_rule(ffi, RNP_FEATURE_HASH_ALG, hash, creation, &flags, NULL, &level);
     bool res = level < RNP_SECURITY_DEFAULT;
     if (res) {
         printf(
@@ -4146,7 +4182,7 @@ is_weak_signature(rnp_ffi_t ffi, rnp_signature_handle_t sig)
     return res;
 }
 
-const std::string
+static const std::string
 get_uid_str(rnp_uid_handle_t uid)
 {
     uint32_t type = 0;
@@ -4245,14 +4281,14 @@ TEST_F(rnp_tests, test_ffi_sha1_self_signatures)
 {
     rnp_ffi_t ffi = NULL;
     assert_rnp_success(rnp_ffi_create(&ffi, "GPG", "GPG"));
-    /* This key has SHA1 self signature, made after the cut-off date */
+    /* This key has SHA1 self signature, made before the cut-off date */
     assert_true(import_pub_keys(ffi, "data/test_stream_key_load/rsa-rsa-pub.asc"));
     rnp_key_handle_t key = NULL;
     assert_rnp_success(rnp_locate_key(ffi, "keyid", "2fb9179118898e8b", &key));
     /* Check key validity */
-    bool valid = true;
+    bool valid = false;
     assert_rnp_success(rnp_key_is_valid(key, &valid));
-    assert_false(valid);
+    assert_true(valid);
     size_t count = 0;
     /* Check uid validity */
     assert_rnp_success(rnp_key_get_uid_count(key, &count));
@@ -4260,7 +4296,7 @@ TEST_F(rnp_tests, test_ffi_sha1_self_signatures)
     rnp_uid_handle_t uid = NULL;
     assert_rnp_success(rnp_key_get_uid_handle_at(key, 0, &uid));
     assert_rnp_success(rnp_uid_is_valid(uid, &valid));
-    assert_false(valid);
+    assert_true(valid);
     rnp_uid_handle_destroy(uid);
     /* Check subkey validity */
     assert_rnp_success(rnp_key_get_subkey_count(key, &count));
@@ -4268,23 +4304,48 @@ TEST_F(rnp_tests, test_ffi_sha1_self_signatures)
     rnp_key_handle_t sub = NULL;
     assert_rnp_success(rnp_key_get_subkey_at(key, 0, &sub));
     assert_rnp_success(rnp_key_is_valid(sub, &valid));
+    assert_true(valid);
+    /* Check weak signature count */
+    assert_int_equal(key_weak_self_signatures_count(ffi, key), 0);
+    rnp_key_handle_destroy(sub);
+    rnp_key_handle_destroy(key);
+    assert_rnp_success(rnp_unload_keys(ffi, RNP_KEY_UNLOAD_PUBLIC));
+
+    /* Check the key which has SHA1 self signature, made after the cut-off date */
+    assert_rnp_success(rnp_set_timestamp(ffi, SHA1_KEY_FROM + 10));
+    assert_true(import_pub_keys(ffi, "data/test_forged_keys/eddsa-2024-pub.pgp"));
+    assert_rnp_success(rnp_locate_key(ffi, "keyid", "980e3741f632212c", &key));
+    /* Check key validity */
+    assert_rnp_success(rnp_key_is_valid(key, &valid));
+    assert_false(valid);
+    /* Check uid validity */
+    assert_rnp_success(rnp_key_get_uid_count(key, &count));
+    assert_int_equal(count, 1);
+    assert_rnp_success(rnp_key_get_uid_handle_at(key, 0, &uid));
+    assert_rnp_success(rnp_uid_is_valid(uid, &valid));
+    assert_false(valid);
+    rnp_uid_handle_destroy(uid);
+    /* Check subkey validity */
+    assert_rnp_success(rnp_key_get_subkey_count(key, &count));
+    assert_int_equal(count, 1);
+    assert_rnp_success(rnp_key_get_subkey_at(key, 0, &sub));
+    assert_rnp_success(rnp_key_is_valid(sub, &valid));
     assert_false(valid);
     /* Check weak signature count */
     assert_int_equal(key_weak_self_signatures_count(ffi, key), 2);
     rnp_key_handle_destroy(sub);
     rnp_key_handle_destroy(key);
-
     assert_rnp_success(rnp_unload_keys(ffi, RNP_KEY_UNLOAD_PUBLIC));
     /* Now allow the SHA1 hash */
     assert_rnp_success(rnp_add_security_rule(ffi,
                                              RNP_FEATURE_HASH_ALG,
                                              "SHA1",
                                              RNP_SECURITY_OVERRIDE,
-                                             1547856000,
+                                             SHA1_KEY_FROM + 1,
                                              RNP_SECURITY_DEFAULT));
 
-    assert_true(import_pub_keys(ffi, "data/test_stream_key_load/rsa-rsa-pub.asc"));
-    assert_rnp_success(rnp_locate_key(ffi, "keyid", "2fb9179118898e8b", &key));
+    assert_true(import_pub_keys(ffi, "data/test_forged_keys/eddsa-2024-pub.pgp"));
+    assert_rnp_success(rnp_locate_key(ffi, "keyid", "980e3741f632212c", &key));
     /* Check key validity */
     assert_rnp_success(rnp_key_is_valid(key, &valid));
     assert_true(valid);
@@ -4302,5 +4363,80 @@ TEST_F(rnp_tests, test_ffi_sha1_self_signatures)
     rnp_key_handle_destroy(sub);
     rnp_key_handle_destroy(key);
 
+    /* Check the key which has MD5 self signature, made after the cut-off date */
+    assert_true(import_pub_keys(ffi, "data/test_forged_keys/eddsa-2012-md5-pub.pgp"));
+    assert_rnp_success(rnp_locate_key(ffi, "keyid", "8801eafbd906bd21", &key));
+    /* Check key validity */
+    assert_rnp_success(rnp_key_is_valid(key, &valid));
+    assert_false(valid);
+    /* Check uid validity */
+    assert_rnp_success(rnp_key_get_uid_handle_at(key, 0, &uid));
+    assert_rnp_success(rnp_uid_is_valid(uid, &valid));
+    assert_false(valid);
+    rnp_uid_handle_destroy(uid);
+    /* Check subkey validity */
+    assert_rnp_success(rnp_key_get_subkey_at(key, 0, &sub));
+    assert_rnp_success(rnp_key_is_valid(sub, &valid));
+    assert_false(valid);
+    /* Check weak signature count */
+    assert_int_equal(key_weak_self_signatures_count(ffi, key), 2);
+    rnp_key_handle_destroy(sub);
+    rnp_key_handle_destroy(key);
+
+    rnp_ffi_destroy(ffi);
+}
+
+TEST_F(rnp_tests, test_reprotect_keys)
+{
+    rnp_ffi_t ffi = NULL;
+    assert_rnp_success(rnp_ffi_create(&ffi, "GPG", "GPG"));
+    /* Cast5-encrypted keys */
+    assert_true(
+      load_keys_gpg(ffi, "data/keyrings/1/pubring.gpg", "data/keyrings/1/secring-cast5.gpg"));
+
+    rnp_identifier_iterator_t it = NULL;
+    assert_rnp_success(rnp_identifier_iterator_create(ffi, &it, "fingerprint"));
+    assert_non_null(it);
+    const char *ident = NULL;
+    do {
+        ident = NULL;
+        assert_rnp_success(rnp_identifier_iterator_next(it, &ident));
+        if (!ident) {
+            break;
+        }
+        rnp_key_handle_t key = NULL;
+        assert_rnp_success(rnp_locate_key(ffi, "fingerprint", ident, &key));
+        if (cast5_enabled()) {
+            assert_rnp_success(rnp_key_unprotect(key, "password"));
+            assert_rnp_success(rnp_key_protect(key, "password", "AES256", NULL, NULL, 65536));
+        } else {
+            assert_rnp_failure(rnp_key_unprotect(key, "password"));
+        }
+        rnp_key_handle_destroy(key);
+    } while (1);
+    assert_rnp_success(rnp_identifier_iterator_destroy(it));
+    /* AES-encrypted keys */
+    assert_rnp_success(rnp_unload_keys(ffi, RNP_KEY_UNLOAD_PUBLIC | RNP_KEY_UNLOAD_SECRET));
+    assert_true(
+      load_keys_gpg(ffi, "data/keyrings/1/pubring.gpg", "data/keyrings/1/secring.gpg"));
+    assert_rnp_success(rnp_identifier_iterator_create(ffi, &it, "fingerprint"));
+    assert_non_null(it);
+    do {
+        ident = NULL;
+        assert_rnp_success(rnp_identifier_iterator_next(it, &ident));
+        if (!ident) {
+            break;
+        }
+        rnp_key_handle_t key = NULL;
+        assert_rnp_success(rnp_locate_key(ffi, "fingerprint", ident, &key));
+        assert_rnp_success(rnp_key_unprotect(key, "password"));
+        if (cast5_enabled()) {
+            assert_rnp_success(rnp_key_protect(key, "password", "CAST5", NULL, NULL, 65536));
+        } else {
+            assert_rnp_success(rnp_key_protect(key, "password", "AES128", NULL, NULL, 65536));
+        }
+        rnp_key_handle_destroy(key);
+    } while (1);
+    assert_rnp_success(rnp_identifier_iterator_destroy(it));
     rnp_ffi_destroy(ffi);
 }

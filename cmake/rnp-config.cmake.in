@@ -29,4 +29,3 @@ include(CMakeFindDependencyMacro)
 if(NOT TARGET rnp::librnp)
   include("${CMAKE_CURRENT_LIST_DIR}/rnp-targets.cmake")
 endif()
-

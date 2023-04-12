@@ -16,7 +16,6 @@ stdenv.mkDerivation rec {
     "-DBUILD_SHARED_LIBS=on"
     "-DBUILD_TESTING=on"
     "-DDOWNLOAD_GTEST=off"
-    "-DDOWNLOAD_RUBYRNP=off"
   ];
 
   nativeBuildInputs = with pkgs; [ asciidoctor cmake gnupg gtest pkg-config python3 ];
@@ -31,7 +30,6 @@ stdenv.mkDerivation rec {
     commitEpoch=$(date +%s)
     baseVersion=$(cat version.txt)
     echo "v$baseVersion-0-g0-dirty+$commitEpoch" > version.txt
-
     # For generating the correct timestamp in cmake
     export SOURCE_DATE_EPOCH=$commitEpoch
   '';

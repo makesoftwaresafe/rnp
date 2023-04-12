@@ -96,9 +96,13 @@ hash_supported(const std::string &hash)
 }
 
 static bool
-hash_secure(const std::string &hash)
+hash_secure(rnp_ffi_t ffi, const std::string &hash, uint32_t action)
 {
-    return (lowercase(hash) != "md5") && (lowercase(hash) != "sha1");
+    uint32_t flags = action;
+    uint32_t level = 0;
+    rnp_get_security_rule(
+      ffi, RNP_FEATURE_HASH_ALG, hash.c_str(), global_ctx.time(), &flags, NULL, &level);
+    return level == RNP_SECURITY_DEFAULT;
 }
 
 TEST_F(rnp_tests, rnpkeys_generatekey_testSignature)
@@ -181,7 +185,7 @@ TEST_F(rnp_tests, rnpkeys_generatekey_testSignature)
                 cfg.set_bool(CFG_OVERWRITE, true);
                 cfg.set_str(CFG_INFILE, "dummyfile.dat.pgp");
                 cfg.set_str(CFG_OUTFILE, "dummyfile.verify");
-                if (!hash_secure(hashAlg[i])) {
+                if (!hash_secure(rnp.ffi, hashAlg[i], RNP_SECURITY_VERIFY_DATA)) {
                     assert_false(cli_rnp_process_file(&rnp));
                     rnp.end();
                     assert_int_equal(rnp_unlink("dummyfile.dat.pgp"), 0);
@@ -228,6 +232,12 @@ cipher_supported(const std::string &cipher)
         return false;
     }
     if (!twofish_enabled() && lowercase(cipher) == "twofish") {
+        return false;
+    }
+    if (!blowfish_enabled() && lowercase(cipher) == "blowfish") {
+        return false;
+    }
+    if (!cast5_enabled() && lowercase(cipher) == "cast5") {
         return false;
     }
     return true;
@@ -351,7 +361,7 @@ TEST_F(rnp_tests, rnpkeys_generatekey_verifySupportedHashAlg)
         assert_true(keycount > 0);
         rnp_key_handle_t handle = NULL;
         assert_rnp_success(rnp_locate_key(rnp.ffi, "userid", hashAlg[i], &handle));
-        if (hash_secure(hashAlg[i])) {
+        if (hash_secure(rnp.ffi, hashAlg[i], RNP_SECURITY_VERIFY_KEY)) {
             assert_non_null(handle);
             bool valid = false;
             rnp_key_is_valid(handle, &valid);
@@ -580,7 +590,7 @@ ask_expert_details(cli_rnp_t *ctx, rnp_cfg &ops, const char *rsp)
     ops.set_int(CFG_PASSFD, pipefd[0]);
     write_pass_to_pipe(pipefd[1], 2);
     close(pipefd[1]);
-    if (!rnpkeys_init(ctx, ops)) {
+    if (!rnpkeys_init(*ctx, ops)) {
         close(pipefd[0]); // otherwise will be closed via passfp
         goto end;
     }
@@ -913,6 +923,7 @@ TEST_F(rnp_tests, generatekeyECDSA_explicitlySetSmallOutputDigest_DigestAlgAdjus
 
     ops.set_bool(CFG_EXPERT, true);
     ops.set_str(CFG_HASH, "SHA1");
+    ops.set_bool(CFG_WEAK_HASH, true);
     ops.set_int(CFG_S2K_ITER, 1);
     ops.add_str(CFG_USERID, "expert_small_digest");
     assert_true(ask_expert_details(&rnp, ops, "19\n2\n"));
@@ -1077,6 +1088,7 @@ TEST_F(rnp_tests, test_generated_key_sigs)
         pgp_userid_pkt_t uid;
         uid.tag = PGP_PKT_USER_ID;
         uid.uid = (uint8_t *) malloc(4);
+        assert_non_null(uid.uid);
         uid.uid_len = 4;
         memcpy(uid.uid, "fake", 4);
 

@@ -172,6 +172,9 @@ struct rnp_op_verify_st {
     bool           validated{};
     pgp_aead_alg_t aead{};
     pgp_symm_alg_t salg{};
+    bool           ignore_sigs{};
+    bool           require_all_sigs{};
+    bool           allow_hidden{};
     /* recipient/symenc information */
     rnp_recipient_handle_t recipients{};
     size_t                 recipient_count{};
@@ -206,6 +209,15 @@ struct rnp_identifier_iterator_st {
     unsigned                        uididx;
     json_object *                   tbl;
     char                            buf[RNP_LOCATOR_MAX_SIZE];
+};
+
+struct rnp_decryption_kp_param_t {
+    rnp_op_verify_t op;
+    bool            has_hidden; /* key provider had hidden keyid request */
+    pgp_key_t *     last;       /* last key, returned in hidden keyid request */
+
+    rnp_decryption_kp_param_t(rnp_op_verify_t opobj)
+        : op(opobj), has_hidden(false), last(NULL){};
 };
 
 /* This is just for readability at the call site and will hopefully reduce mistakes.
